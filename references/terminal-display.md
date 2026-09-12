@@ -12,7 +12,7 @@
 
 | `--mode` | What it does | Where it works |
 |---|---|---|
-| `hud` | A small always-on-top, click-through overlay window pinned to a corner of the terminal window, showing the picture (animated for a GIF persona) and the name | macOS (needs `swiftc` from the Xcode command line tools) |
+| `hud` | A small always-on-top, click-through overlay window pinned to a corner of the terminal window, showing the picture (animated for a GIF persona) and the name | macOS (needs `swiftc` from the Xcode command line tools) and Windows (needs a Python with tkinter) |
 | `inline` | Inline image painted into the text grid via `termimg.py` | Plain terminals; degrades to a sliver under tmux |
 | `state` | iTerm2 badge (name) + background image (picture) | iTerm2, incl. tmux — but **overwrites user-owned settings**, so it's opt-in only |
 | `auto` (default) | `hud` where supported, else `inline` | — |
@@ -23,6 +23,10 @@
 **Why `state` is never auto-selected.** It works by setting iTerm2's session background image — a slot that belongs to the user. Anyone with a configured background loses it, and clearing sets empty rather than restoring theirs. A feature shouldn't appropriate a user-owned setting, so `state` stayed available but demoted.
 
 **Why the overlay is a separate window.** It consumes no terminal rows, touches no configuration, and doesn't depend on any terminal image protocol — so tmux, the shell and the emulator are all irrelevant to it, and animated GIF personas actually animate (via `NSImageView`, which drives GIF frames itself; drawing an `NSImage` by hand only ever renders frame one).
+
+**Two implementations, one interface.** `scripts/hud/PersonaHUD.swift` (macOS, AppKit `NSPanel`) and `scripts/hud/persona_hud.py` (Windows, tkinter + `ctypes`) take the same flags and behave the same way; `profilegen/hud.py` picks between them by platform. The macOS one is compiled on first use into `~/.cache/profile-gen` and recompiled when its source changes; the Windows one is a script, so there's nothing to build — it's launched with `pythonw.exe` where available and `DETACHED_PROCESS | CREATE_NO_WINDOW` so no console flashes up. On Windows, click-through comes from `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, background transparency from tkinter's Windows-only `-transparentcolor`, and window tracking from `GetForegroundWindow`/`GetWindowRect` filtered by the foreground process name. Pillow, when installed, gives a circular avatar and smooth GIF frames; without it the fallback is a square avatar animated through `PhotoImage`'s frame index.
+
+*Windows caveat, untested as of writing:* the overlay draws a Windows window, so it has to run on the Windows side. Under WSL it would need an explicit Windows interpreter rather than the WSL one, which `hud.py` doesn't attempt yet.
 
 **tmux window awareness.** Several tmux windows share one terminal window, so "is the terminal frontmost" can't tell the overlay that its tmux window has been switched away from. The overlay is passed its `TMUX_PANE` and asks tmux (`#{window_active}#{session_attached}`) whether it should be on screen. For the same reason each pane gets its own pid file (`~/.cache/profile-gen/hud-<pane>.pid`) and stopping one persona's overlay never touches another session's.
 
