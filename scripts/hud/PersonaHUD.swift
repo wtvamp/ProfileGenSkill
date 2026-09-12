@@ -25,6 +25,10 @@ struct Options {
     // persona's overlay would sit on top of whichever tmux window happens to be visible.
     var tmuxPane = ""
     var tmuxBin = ""
+    // The session this overlay belongs to. It runs detached so it survives the command that
+    // started it, which also means nothing else would ever clean it up -- watching this pid is
+    // what makes it disappear when the session exits, with no hook to configure.
+    var watchPid: pid_t = 0
 }
 
 func parseArgs() -> Options {
@@ -42,6 +46,7 @@ func parseArgs() -> Options {
         case "--owner": o.ownerName = value()
         case "--tmux-pane": o.tmuxPane = value()
         case "--tmux-bin": o.tmuxBin = value()
+        case "--watch-pid": o.watchPid = pid_t(Int32(value()) ?? 0)
         default: break
         }
     }
@@ -151,43 +156,100 @@ final class Controller: NSObject {
                       width: q.size.width, height: q.size.height)
     }
 
-    /// Whether this persona's tmux window is the one currently on screen. tmux multiplexes many
-    /// windows into a single terminal window, so without asking tmux directly there's no way to
-    /// tell that this persona's window has been switched away from -- the terminal app is still
-    /// frontmost either way. Returns true when not running under tmux at all.
-    func tmuxWindowIsVisible() -> Bool {
-        guard !opts.tmuxPane.isEmpty, !opts.tmuxBin.isEmpty else { return true }
+    /// Where this persona's pane sits, as fractions of the terminal window, plus whether it's on
+    /// screen at all.
+    ///
+    /// Two separate things make this necessary. tmux multiplexes many *windows* into one terminal
+    /// window, so the terminal being frontmost says nothing about whether this persona's window is
+    /// the one displayed. And a window can be split into several *panes*, each potentially running
+    /// its own agent with its own persona -- pinning every overlay to the terminal window's corner
+    /// would stack them on top of each other. Positioning each overlay over its own pane is both
+    /// unambiguous and what makes "which agent is in which pane" readable at a glance.
+    struct PaneGeometry {
+        var fx0: CGFloat, fy0: CGFloat, fx1: CGFloat, fy1: CGFloat
+        var visible: Bool
+    }
+
+    func tmuxPaneGeometry() -> PaneGeometry? {
+        guard !opts.tmuxPane.isEmpty, !opts.tmuxBin.isEmpty else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: opts.tmuxBin)
         process.arguments = [
-            "display-message", "-pt", opts.tmuxPane, "#{window_active}#{session_attached}",
+            "display-message", "-pt", opts.tmuxPane,
+            "#{pane_left},#{pane_top},#{pane_right},#{pane_bottom},"
+                + "#{window_width},#{window_height},#{window_active},#{session_attached}",
         ]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return false }
+        do { try process.run() } catch { return PaneGeometry(fx0: 0, fy0: 0, fx1: 1, fy1: 1, visible: false) }
         process.waitUntilExit()
+
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let out = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return out == "11"  // window is active in its session, and that session is attached
+        let parts = out.split(separator: ",").map { Double($0) ?? -1 }
+        guard parts.count == 8, !parts.contains(-1), parts[4] > 0, parts[5] > 0 else {
+            return PaneGeometry(fx0: 0, fy0: 0, fx1: 1, fy1: 1, visible: false)
+        }
+
+        let cols = CGFloat(parts[4]), rows = CGFloat(parts[5])
+        // pane_right/pane_bottom are inclusive cell indices, hence the +1 for the far edges.
+        return PaneGeometry(
+            fx0: CGFloat(parts[0]) / cols,
+            fy0: CGFloat(parts[1]) / rows,
+            fx1: (CGFloat(parts[2]) + 1) / cols,
+            fy1: (CGFloat(parts[3]) + 1) / rows,
+            visible: parts[6] == 1 && parts[7] == 1
+        )
+    }
+
+    /// Rough height of the window's title bar, which the Quartz window bounds include but the
+    /// terminal's text area does not.
+    static let titleBarHeight: CGFloat = 28
+
+    /// Whether the session that owns this overlay is still running. `kill(pid, 0)` sends no
+    /// signal -- it only reports whether the process can be signalled, i.e. whether it exists.
+    func ownerAlive() -> Bool {
+        guard opts.watchPid > 0 else { return true }
+        if kill(opts.watchPid, 0) == 0 { return true }
+        return errno == EPERM  // exists, but not ours to signal
     }
 
     @objc func tick() {
+        guard ownerAlive() else {
+            NSApp.terminate(nil)
+            return
+        }
         let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName
-        guard frontmost == opts.ownerName,
-              tmuxWindowIsVisible(),
-              let quartz = terminalWindowFrame()
-        else {
+        guard frontmost == opts.ownerName, let quartz = terminalWindowFrame() else {
             panel.orderOut(nil)
             return
         }
+
         let term = toCocoa(quartz)
+        let content = CGRect(x: term.minX, y: term.minY,
+                             width: term.width, height: term.height - Self.titleBarHeight)
+
+        // Default target is the whole terminal window; under tmux, narrow it to this pane.
+        var target = content
+        if let pane = tmuxPaneGeometry() {
+            guard pane.visible else {
+                panel.orderOut(nil)
+                return
+            }
+            // Cell fractions are measured from the top; Cocoa's y axis runs the other way.
+            target = CGRect(
+                x: content.minX + pane.fx0 * content.width,
+                y: content.maxY - pane.fy1 * content.height,
+                width: (pane.fx1 - pane.fx0) * content.width,
+                height: (pane.fy1 - pane.fy0) * content.height)
+        }
+
         let s = panel.frame.size
         let m = opts.margin
-        let x = opts.corner.hasSuffix("l") ? term.minX + m : term.maxX - s.width - m
-        // top corners sit below the title bar, which the Quartz bounds include
-        let y = opts.corner.hasPrefix("t") ? term.maxY - s.height - m - 28 : term.minY + m
+        let x = opts.corner.hasSuffix("l") ? target.minX + m : target.maxX - s.width - m
+        let y = opts.corner.hasPrefix("t") ? target.maxY - s.height - m : target.minY + m
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
