@@ -22,7 +22,9 @@ from pathlib import Path
 
 CACHE_DIR = Path.home() / ".cache" / "profile-gen"
 BINARY = CACHE_DIR / "persona-hud"
-SOURCE = Path(__file__).resolve().parent.parent / "hud" / "PersonaHUD.swift"
+HUD_DIR = Path(__file__).resolve().parent.parent / "hud"
+SOURCE = HUD_DIR / "PersonaHUD.swift"
+WINDOWS_SOURCE = HUD_DIR / "persona_hud.py"
 
 DEFAULT_AVATAR = 104
 DEFAULT_CORNER = "tr"
@@ -46,15 +48,42 @@ def _pid_file() -> Path:
     return CACHE_DIR / f"hud-{_pane_key()}.pid"
 
 
+def _windows_interpreter() -> str | None:
+    """`pythonw.exe` for preference, so launching the overlay doesn't flash a console window."""
+    if not sys.platform.startswith("win"):
+        return None
+    candidate = Path(sys.executable).with_name("pythonw.exe")
+    if candidate.is_file():
+        return str(candidate)
+    return shutil.which("pythonw") or sys.executable
+
+
 def is_supported() -> bool:
-    """macOS with a Swift compiler available (Xcode command line tools)."""
-    return sys.platform == "darwin" and shutil.which("swiftc") is not None
+    """macOS with a Swift compiler (Xcode command line tools), or Windows with tkinter."""
+    if sys.platform == "darwin":
+        return shutil.which("swiftc") is not None and SOURCE.is_file()
+    if sys.platform.startswith("win"):
+        if not WINDOWS_SOURCE.is_file():
+            return False
+        try:
+            import tkinter  # noqa: F401
+        except ImportError:
+            return False
+        return True
+    return False
 
 
 def ensure_built() -> Path | None:
-    """Compile the overlay if the cached binary is missing or older than its source."""
-    if not is_supported() or not SOURCE.is_file():
+    """The overlay executable for this platform, compiling it first where that's needed.
+
+    On Windows the overlay is a Python script, so there's nothing to build; on macOS the Swift
+    source is compiled into ``~/.cache/profile-gen`` on first use and recompiled whenever the
+    source is newer, so no binary is checked in and the user never runs a build step.
+    """
+    if not is_supported():
         return None
+    if sys.platform.startswith("win"):
+        return WINDOWS_SOURCE
     if BINARY.is_file() and BINARY.stat().st_mtime >= SOURCE.stat().st_mtime:
         return BINARY
 
@@ -111,7 +140,11 @@ def launch(
 
     stop()
 
-    args = [str(binary), "--avatar", str(avatar), "--corner", corner, "--margin", str(margin)]
+    if sys.platform.startswith("win"):
+        args = [_windows_interpreter() or sys.executable, str(binary)]
+    else:
+        args = [str(binary)]
+    args += ["--avatar", str(avatar), "--corner", corner, "--margin", str(margin)]
     if image_path:
         args += ["--image", str(image_path)]
     if name:
@@ -121,15 +154,22 @@ def launch(
     # one on screen -- tmux windows share a single terminal window, so the overlay can't work this
     # out from the terminal alone.
     pane = os.environ.get("TMUX_PANE")
-    tmux_bin = shutil.which("tmux")
-    if pane and tmux_bin:
-        args += ["--tmux-pane", pane, "--tmux-bin", tmux_bin]
+    if pane:
+        tmux_bin = shutil.which("tmux")
+        if tmux_bin:
+            args += ["--tmux-pane", pane, "--tmux-bin", tmux_bin]
+
+    # Detach so the overlay outlives the process that started it. Windows has no
+    # start_new_session; DETACHED_PROCESS|CREATE_NO_WINDOW is the equivalent, and also keeps a
+    # console window from flashing up.
+    if sys.platform.startswith("win"):
+        detach = {"creationflags": 0x00000008 | 0x08000000}
+    else:
+        detach = {"start_new_session": True}
 
     try:
         with open(os.devnull, "wb") as devnull:
-            process = subprocess.Popen(
-                args, stdout=devnull, stderr=devnull, start_new_session=True
-            )
+            process = subprocess.Popen(args, stdout=devnull, stderr=devnull, **detach)
     except OSError:
         return False
 

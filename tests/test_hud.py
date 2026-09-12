@@ -1,4 +1,5 @@
 import subprocess
+import types
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ def _isolated_cache(tmp_path, monkeypatch):
     monkeypatch.delenv("TMUX_PANE", raising=False)
 
 
-def test_is_supported_requires_macos_and_swiftc(monkeypatch):
+def test_is_supported_on_macos_requires_swiftc(monkeypatch):
     monkeypatch.setattr(hud.sys, "platform", "darwin")
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/swiftc")
     assert hud.is_supported() is True
@@ -24,9 +25,61 @@ def test_is_supported_requires_macos_and_swiftc(monkeypatch):
     monkeypatch.setattr(hud.shutil, "which", lambda name: None)
     assert hud.is_supported() is False
 
-    monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/swiftc")
+
+def test_is_supported_on_windows_requires_tkinter(monkeypatch):
     monkeypatch.setattr(hud.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "tkinter", types.ModuleType("tkinter"))
+    assert hud.is_supported() is True
+
+    # a Python build without Tk (Homebrew's, for one) can't draw the overlay
+    monkeypatch.setitem(sys.modules, "tkinter", None)
     assert hud.is_supported() is False
+
+
+def test_is_supported_false_on_other_platforms(monkeypatch):
+    monkeypatch.setattr(hud.sys, "platform", "linux")
+    assert hud.is_supported() is False
+
+
+def test_windows_launch_runs_the_script_through_an_interpreter(monkeypatch, tmp_path):
+    monkeypatch.setattr(hud.sys, "platform", "win32")
+    monkeypatch.setattr(hud, "WINDOWS_SOURCE", tmp_path / "persona_hud.py")
+    (tmp_path / "persona_hud.py").touch()
+    monkeypatch.setitem(sys.modules, "tkinter", types.ModuleType("tkinter"))
+    monkeypatch.setattr(hud, "_windows_interpreter", lambda: r"C:\Python\pythonw.exe")
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1234
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(hud.subprocess, "Popen", fake_popen)
+    assert hud.launch("C:/persona.png", "Ada") is True
+
+    assert captured["args"][0] == r"C:\Python\pythonw.exe"
+    assert captured["args"][1].endswith("persona_hud.py")
+    # Windows has no start_new_session; detaching uses creationflags instead
+    assert "start_new_session" not in captured["kwargs"]
+    assert captured["kwargs"]["creationflags"] == 0x00000008 | 0x08000000
+
+
+def test_windows_ensure_built_needs_no_compile(monkeypatch, tmp_path):
+    monkeypatch.setattr(hud.sys, "platform", "win32")
+    monkeypatch.setattr(hud, "WINDOWS_SOURCE", tmp_path / "persona_hud.py")
+    (tmp_path / "persona_hud.py").touch()
+    monkeypatch.setitem(sys.modules, "tkinter", types.ModuleType("tkinter"))
+
+    def fail_build(*a, **kw):
+        raise AssertionError("Windows overlay is a script; nothing to compile")
+
+    monkeypatch.setattr(hud.subprocess, "run", fail_build)
+    assert hud.ensure_built() == tmp_path / "persona_hud.py"
 
 
 def test_pane_key_isolates_sessions(monkeypatch):
