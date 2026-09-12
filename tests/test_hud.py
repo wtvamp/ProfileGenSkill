@@ -108,7 +108,7 @@ def test_active_tmux_pane_asks_the_server_when_env_var_is_absent(monkeypatch):
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
 
     class FakeResult:
-        stdout = "0 0 %3\n1 0 %4\n1 1 %5\n"
+        stdout = "0 1 0 %3\n1 1 0 %4\n1 1 1 %5\n"
 
     def fake_run(args, **kwargs):
         assert args[0] == "/usr/bin/tmux"
@@ -119,12 +119,29 @@ def test_active_tmux_pane_asks_the_server_when_env_var_is_absent(monkeypatch):
     assert hud._active_tmux_pane() == "%5"
 
 
+def test_active_tmux_pane_ignores_a_pane_active_in_a_window_not_on_screen(monkeypatch):
+    # Found live: a tmux session commonly has more than one window (a split made for something
+    # else, an old window left open), and each window remembers its own "last active pane" even
+    # while a different window is the one actually on screen. %4 here is pane_active in its own
+    # (not-current) window -- session_attached + pane_active alone would have matched it first and
+    # pinned the overlay to a window nobody is looking at. Only %6, active in the window that is
+    # actually current, is correct.
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
+
+    class FakeResult:
+        stdout = "1 0 1 %4\n1 1 0 %5\n1 1 1 %6\n"
+
+    monkeypatch.setattr(hud.subprocess, "run", lambda *a, **kw: FakeResult())
+    assert hud._active_tmux_pane() == "%6"
+
+
 def test_active_tmux_pane_none_when_no_session_attached(monkeypatch):
     monkeypatch.delenv("TMUX_PANE", raising=False)
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
 
     class FakeResult:
-        stdout = "0 0 %3\n0 1 %4\n"  # every session detached -- nothing to target
+        stdout = "0 1 0 %3\n0 1 1 %4\n"  # every session detached -- nothing to target
 
     monkeypatch.setattr(hud.subprocess, "run", lambda *a, **kw: FakeResult())
     assert hud._active_tmux_pane() is None

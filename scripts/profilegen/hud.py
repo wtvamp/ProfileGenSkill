@@ -151,16 +151,23 @@ def _active_tmux_pane() -> str | None:
         return None
     try:
         out = subprocess.run(
-            [tmux_bin, "list-panes", "-a", "-F", "#{session_attached} #{pane_active} #{pane_id}"],
+            [tmux_bin, "list-panes", "-a", "-F",
+             "#{session_attached} #{window_active} #{pane_active} #{pane_id}"],
             capture_output=True, text=True, timeout=5,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
 
+    # All three, not just session_attached + pane_active: a tmux session commonly has more than
+    # one window (a split made for something else, an old window left open), and each window
+    # remembers its own "last active pane" even while a different window is the one actually on
+    # screen -- so pane_active alone is ambiguous the moment there's a second window, and matches
+    # whichever happens to come first in list-panes' output rather than the one truly visible.
+    # window_active is what actually says "this is the window the client has up right now".
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) == 3 and parts[0] == "1" and parts[1] == "1":
-            return parts[2]
+        if len(parts) == 4 and parts[0] == "1" and parts[1] == "1" and parts[2] == "1":
+            return parts[3]
     return None
 
 
