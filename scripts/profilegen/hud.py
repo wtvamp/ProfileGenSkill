@@ -126,6 +126,44 @@ def owner_pid() -> int | None:
     return None
 
 
+def _active_tmux_pane() -> str | None:
+    """The tmux pane this call should be scoped to, found without trusting $TMUX_PANE.
+
+    $TMUX_PANE is only set when this process itself was started *inside* the tmux pane it should
+    act on. That's true for a plain foreground `claude` typed into a pane, but not for a session
+    served through Claude Code's background-agent daemon (`--bg`, `/background`, a bg-spare
+    worker) -- the daemon's worker pool has no tmux pane of its own to inherit one from, even
+    when the *command that reached it* was typed into a real tmux pane. Trusting the env var in
+    that case doesn't fail loudly, it just silently returns None every time, which is what made
+    this look like "the overlay stopped respecting tmux" rather than "this session was never
+    going to have $TMUX_PANE set in the first place".
+
+    So: prefer the env var when it's actually there (the common case, and free). Otherwise ask
+    the tmux server itself, which knows what's attached and active regardless of who's asking --
+    the same fix and the same reasoning as watch-ci-in-tmux.sh's tmux-pane detection.
+    """
+    pane = os.environ.get("TMUX_PANE", "")
+    if pane:
+        return pane
+
+    tmux_bin = shutil.which("tmux")
+    if not tmux_bin:
+        return None
+    try:
+        out = subprocess.run(
+            [tmux_bin, "list-panes", "-a", "-F", "#{session_attached} #{pane_active} #{pane_id}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == "1" and parts[1] == "1":
+            return parts[2]
+    return None
+
+
 def _pane_key() -> str:
     """Identifies the tmux pane this persona belongs to.
 
@@ -134,7 +172,7 @@ def _pane_key() -> str:
     otherwise they'd share one pid file and stopping or relaunching one persona's overlay would
     kill the others'.
     """
-    pane = os.environ.get("TMUX_PANE", "")
+    pane = _active_tmux_pane() or ""
     safe = "".join(ch for ch in pane if ch.isalnum())
     return safe or "default"
 
@@ -247,8 +285,12 @@ def launch(
 
     # Tell the overlay which tmux pane it belongs to, so it hides when that tmux window isn't the
     # one on screen -- tmux windows share a single terminal window, so the overlay can't work this
-    # out from the terminal alone.
-    pane = os.environ.get("TMUX_PANE")
+    # out from the terminal alone. See _active_tmux_pane()'s own comment for why this can't just
+    # read $TMUX_PANE: a daemon-hosted session (--bg, /background) never has it set even when the
+    # command that reached it came from a real tmux pane, and without it the overlay silently
+    # falls back to targeting the *whole* terminal window -- still visible, but no longer clipped
+    # to (or hidden by) the one pane it's actually supposed to belong to.
+    pane = _active_tmux_pane()
     if pane:
         tmux_bin = shutil.which("tmux")
         if tmux_bin:
