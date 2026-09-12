@@ -13,19 +13,24 @@ Two ways to point it at a persona:
       recorded relative to the project root (see references/profile-schema.md), not to the
       markdown file's own directory.
 
-Two ways to actually draw it, chosen by --mode (default `auto`):
+Three ways to actually draw it, chosen by --mode (default `auto`):
 
-  state    iTerm2's badge (the name) and background image (the picture). These are terminal
-           *state*, rendered outside the text grid, so they survive tmux and every redraw, and
-           they persist until cleared -- which is the point, since the whole reason to show a
-           persona is to keep knowing who you're talking to. Requires iTerm2.
+  hud      A small always-on-top, click-through overlay window pinned to a corner of the terminal
+           window, showing the picture (animated, for a GIF persona) and the name. macOS only.
+           This is the default because it's the only option that consumes no terminal rows,
+           touches no user configuration, and doesn't depend on terminal image protocols -- so
+           tmux is irrelevant to it. See profilegen/hud.py and scripts/hud/PersonaHUD.swift.
   inline   An inline image painted into the text grid via termimg.py (iTerm2/WezTerm, Kitty,
            sixel). Works in a plain terminal, but inside tmux it degrades to a clipped sliver --
            tmux tracks only text cells and loses the image on the next repaint.
-  auto     `state` when iTerm2 is detected (with or without tmux), else `inline`.
+  state    iTerm2's badge (the name) and background image (the picture). Survives tmux, but it
+           works by overwriting *user-owned* iTerm2 session settings: anyone with a configured
+           background image loses it, and clearing sets empty rather than restoring theirs. Never
+           chosen by `auto` for that reason -- it's opt-in only.
+  auto     `hud` where supported, else `inline`.
   off      Draw nothing. Useful with --clear.
 
---clear removes the badge/background instead of setting them.
+--clear stops the overlay and clears any badge/background left behind.
 
 When stdout is not a tty -- an agent's shell tool, whose output is captured for the model rather
 than shown to the user -- `state` mode writes its escape sequences directly to the active tmux
@@ -50,7 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from profilegen import discovery, frontmatter, termimg, termstate  # noqa: E402
+from profilegen import discovery, frontmatter, hud, termimg, termstate  # noqa: E402
 
 
 def _load_markdown_fields(markdown_path: Path) -> dict | None:
@@ -75,7 +80,24 @@ def _display_one(fields: dict, root: Path, args: argparse.Namespace, mode: str) 
 
     name = fields.get("name")
     image_path = _resolve_image_path(fields.get("image"), root)
-    result = {"name": name, "mode": mode, "badge": False, "background": False, "inline": False}
+    result = {
+        "name": name,
+        "mode": mode,
+        "hud": False,
+        "badge": False,
+        "background": False,
+        "inline": False,
+    }
+
+    if mode == "hud":
+        result["hud"] = hud.launch(
+            str(image_path) if (show_image and image_path and image_path.is_file()) else None,
+            str(name) if (show_name and name) else None,
+            avatar=args.avatar,
+            corner=args.corner,
+            margin=args.margin,
+        )
+        return result
 
     if mode == "state":
         tty = termstate.resolve_target_tty()
@@ -111,6 +133,7 @@ def _print_reports(reports: list[dict]) -> None:
 def _clear(args: argparse.Namespace) -> dict:
     tty = termstate.resolve_target_tty()
     return {
+        "stopped_hud": hud.stop(),
         "cleared_badge": termstate.clear_badge(tty),
         "cleared_background": termstate.clear_background_image(tty),
     }
@@ -127,11 +150,18 @@ def main() -> None:
     parser.add_argument("--slug", help="only display the persona with this slug")
     parser.add_argument(
         "--mode",
-        choices=["auto", "state", "inline", "off"],
+        choices=["auto", "hud", "state", "inline", "off"],
         default="auto",
-        help="how to draw: iTerm2 badge+background (state), in-grid image (inline), or auto",
+        help="how to draw: overlay window (hud), in-grid image (inline), "
+        "iTerm2 badge+background (state -- overwrites user settings), or auto",
     )
-    parser.add_argument("--clear", action="store_true", help="remove the badge/background instead")
+    parser.add_argument("--clear", action="store_true", help="stop the overlay / clear badge+background")
+    parser.add_argument("--avatar", type=int, default=hud.DEFAULT_AVATAR, help="hud avatar size in points")
+    parser.add_argument(
+        "--corner", choices=["tr", "tl", "br", "bl"], default=hud.DEFAULT_CORNER,
+        help="hud corner of the terminal window (default: top-right)",
+    )
+    parser.add_argument("--margin", type=int, default=hud.DEFAULT_MARGIN, help="hud inset from that corner")
     parser.add_argument("--width-pct", type=int, default=10, help="inline image width as %% of terminal width")
     parser.add_argument("--show-image", dest="show_image", action="store_true", default=None)
     parser.add_argument("--no-image", dest="show_image", action="store_false")
@@ -149,7 +179,8 @@ def main() -> None:
 
     mode = args.mode
     if mode == "auto":
-        mode = "state" if termstate.detect_iterm() else "inline"
+        # never auto-select `state`: it works by overwriting user-owned iTerm2 settings.
+        mode = "hud" if hud.is_supported() else "inline"
     if mode == "off":
         return
 
