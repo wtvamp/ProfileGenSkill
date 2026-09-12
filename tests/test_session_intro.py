@@ -1,4 +1,6 @@
+import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -6,75 +8,77 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import session_intro  # noqa: E402
 
 
-def test_sanitized_project_key_matches_claude_code_mangling():
-    root = Path("/Users/warrenthompson/Documents/GTD/Evidence/01_CASES/Thompson_v_Adoreal")
-    assert (
-        session_intro._sanitized_project_key(root)
-        == "-Users-warrenthompson-Documents-GTD-Evidence-01-CASES-Thompson-v-Adoreal"
-    )
+def _touch(path: Path, mtime: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("content", encoding="utf-8")
+    os.utime(path, (mtime, mtime))
 
 
-def test_memory_activity_reads_memory_md(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    root = tmp_path / "proj"
-    root.mkdir()
-    key = session_intro._sanitized_project_key(root)
-    memory_dir = tmp_path / "projects" / key / "memory"
-    memory_dir.mkdir(parents=True)
-    (memory_dir / "MEMORY.md").write_text(
-        "- [Thing one](thing-one.md) -- did a thing\n- [Thing two](thing-two.md) -- did another\n",
-        encoding="utf-8",
-    )
-    assert session_intro._memory_activity(root) == (
-        "- [Thing one](thing-one.md) -- did a thing\n- [Thing two](thing-two.md) -- did another"
-    )
+def test_recent_files_activity_orders_newest_first(tmp_path):
+    now = time.time()
+    _touch(tmp_path / "old.md", now - 100)
+    _touch(tmp_path / "sub" / "new.md", now)
+    activity = session_intro._recent_files_activity(tmp_path)
+    lines = activity.splitlines()
+    assert lines[0].endswith("sub/new.md") or lines[0].endswith("sub\\new.md")
+    assert lines[1].endswith("old.md")
 
 
-def test_memory_activity_none_when_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    root = tmp_path / "proj"
-    root.mkdir()
-    assert session_intro._memory_activity(root) is None
+def test_recent_files_activity_skips_hidden_and_noise_dirs(tmp_path):
+    now = time.time()
+    _touch(tmp_path / ".git" / "HEAD", now)
+    _touch(tmp_path / "node_modules" / "pkg" / "index.js", now)
+    _touch(tmp_path / ".hidden_file", now)
+    _touch(tmp_path / "real_work.md", now - 1)
+    activity = session_intro._recent_files_activity(tmp_path)
+    assert activity is not None
+    assert "real_work.md" in activity
+    assert ".git" not in activity
+    assert "node_modules" not in activity
+    assert ".hidden_file" not in activity
 
 
-def test_recent_activity_prefers_memory_over_git(tmp_path, monkeypatch):
-    monkeypatch.setattr(session_intro, "_memory_activity", lambda root: "memory line")
+def test_recent_files_activity_none_for_empty_dir(tmp_path):
+    assert session_intro._recent_files_activity(tmp_path) is None
+
+
+def test_recent_activity_prefers_files_over_git(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_intro, "_recent_files_activity", lambda root: "2026-01-01  a.md")
     monkeypatch.setattr(session_intro, "_git_activity", lambda root: "2026-01-01 a commit")
     activity, source = session_intro._recent_activity(tmp_path)
-    assert (activity, source) == ("memory line", "memory")
+    assert (activity, source) == ("2026-01-01  a.md", "files")
 
 
 def test_recent_activity_falls_back_to_git(tmp_path, monkeypatch):
-    monkeypatch.setattr(session_intro, "_memory_activity", lambda root: None)
+    monkeypatch.setattr(session_intro, "_recent_files_activity", lambda root: None)
     monkeypatch.setattr(session_intro, "_git_activity", lambda root: "2026-01-01 a commit")
     activity, source = session_intro._recent_activity(tmp_path)
     assert (activity, source) == ("2026-01-01 a commit", "git")
 
 
 def test_recent_activity_none_when_both_absent(tmp_path, monkeypatch):
-    monkeypatch.setattr(session_intro, "_memory_activity", lambda root: None)
+    monkeypatch.setattr(session_intro, "_recent_files_activity", lambda root: None)
     monkeypatch.setattr(session_intro, "_git_activity", lambda root: None)
     activity, source = session_intro._recent_activity(tmp_path)
     assert (activity, source) == (None, "none")
 
 
-def test_build_context_labels_memory_source():
-    context = session_intro.build_context("Ada", None, "- [Thing](thing.md) -- did it", "memory")
-    assert "own memory of past sessions" in context
+def test_build_context_labels_files_source_and_warns_against_inventing_a_narrative():
+    context = session_intro.build_context("Ada", None, "2026-01-01  a.md", "files")
+    assert "most recently touched" in context.lower()
+    assert "don't invent details" in context
     assert "Recent commits" not in context
 
 
 def test_build_context_labels_git_fallback():
     context = session_intro.build_context("Ada", None, "2026-01-01 did a thing", "git")
-    assert "no session memory exists yet" in context
+    assert "no useful file-recency signal" in context
     assert "Recent commits" in context
 
 
-def test_first_activity_teaser_from_memory_strips_markdown():
-    teaser = session_intro._first_activity_teaser(
-        "- [Voice dictation feature](voice.md) — orb mic, local STT", "memory"
-    )
-    assert teaser == "Voice dictation feature"
+def test_first_activity_teaser_from_files():
+    teaser = session_intro._first_activity_teaser("2026-01-01  notes/plan.md", "files")
+    assert teaser == "notes/plan.md"
 
 
 def test_first_activity_teaser_from_git():
@@ -82,7 +86,12 @@ def test_first_activity_teaser_from_git():
     assert teaser == "Fix the thing"
 
 
-def test_build_system_message_uses_teaser():
+def test_build_system_message_uses_files_teaser():
+    message = session_intro.build_system_message("Ada", "2026-01-01  notes/plan.md", "files")
+    assert message == "👋 Ada here. Most recently touched: notes/plan.md."
+
+
+def test_build_system_message_uses_git_teaser():
     message = session_intro.build_system_message("Ada", "2026-01-01 Fix the thing", "git")
     assert message == "👋 Ada here. Lately: Fix the thing."
 
