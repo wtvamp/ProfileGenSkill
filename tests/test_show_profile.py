@@ -102,7 +102,7 @@ def test_show_profile_discovers_and_displays_claude_md_ref_persona(tmp_path, for
     assert claude_md.exists()
 
     result = _run(
-        ["scripts/show_profile.py", "--root", str(tmp_path)],
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline"],
         cwd=REPO_ROOT,
         env=force_iterm_env,
     )
@@ -121,12 +121,17 @@ def test_show_profile_respects_stored_display_off(tmp_path, force_iterm_env):
         display={"image": False, "name": False},
     )
     result = _run(
-        ["scripts/show_profile.py", "--root", str(tmp_path)],
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline"],
         cwd=REPO_ROOT,
         env=force_iterm_env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout == ""
+    # nothing is drawn -- no image escape sequence, no printed name. The JSON report still says
+    # so, which is what a calling program needs to distinguish "off" from "failed".
+    assert "\033]1337" not in result.stdout
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["inline"] is False
+    assert report["badge"] is False
 
 
 def test_show_profile_cli_override_beats_stored_preference(tmp_path, force_iterm_env):
@@ -139,7 +144,7 @@ def test_show_profile_cli_override_beats_stored_preference(tmp_path, force_iterm
         display={"image": False, "name": False},
     )
     result = _run(
-        ["scripts/show_profile.py", "--root", str(tmp_path), "--show-name"],
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline", "--show-name"],
         cwd=REPO_ROOT,
         env=force_iterm_env,
     )
@@ -149,7 +154,7 @@ def test_show_profile_cli_override_beats_stored_preference(tmp_path, force_iterm
 
 def test_show_profile_no_claude_md_is_silent_noop(tmp_path, force_iterm_env):
     result = _run(
-        ["scripts/show_profile.py", "--root", str(tmp_path)],
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline"],
         cwd=REPO_ROOT,
         env=force_iterm_env,
     )
@@ -162,7 +167,7 @@ def test_show_profile_unsupported_terminal_shows_name_only(tmp_path):
         tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked"
     )
     env = dict(**os.environ)
-    for var in ("TERM_PROGRAM", "KITTY_WINDOW_ID", "TMUX"):
+    for var in ("TERM_PROGRAM", "KITTY_WINDOW_ID", "TMUX", "LC_TERMINAL"):
         env.pop(var, None)
     env["TERM"] = "xterm-256color"
     env["PATH"] = "/nonexistent"  # ensure img2sixel isn't "found" via a leftover PATH entry
@@ -178,6 +183,104 @@ def test_show_profile_unsupported_terminal_shows_name_only(tmp_path):
     assert "\033_G" not in result.stdout
 
 
+def test_state_mode_emits_badge_and_background(tmp_path, force_iterm_env):
+    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "state"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SetBadgeFormat=" in result.stdout
+    assert "SetBackgroundImageFile=" in result.stdout
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["mode"] == "state"
+    assert report["badge"] is True
+    assert report["background"] is True
+
+
+def test_state_mode_respects_display_flags(tmp_path, force_iterm_env):
+    _write_profile(
+        tmp_path,
+        "Quiet Persona",
+        "quiet-persona",
+        "claude-md-ref",
+        "tracked",
+        display={"image": False, "name": True},
+    )
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "state"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["badge"] is True
+    assert report["background"] is False
+
+
+def test_auto_mode_picks_state_for_iterm(tmp_path, force_iterm_env):
+    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path)], cwd=REPO_ROOT, env=force_iterm_env
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["mode"] == "state"
+
+
+def test_auto_mode_picks_state_for_iterm_inside_tmux(tmp_path):
+    # TERM_PROGRAM says "tmux" inside a session; LC_TERMINAL is what still identifies iTerm2.
+    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+    env = dict(os.environ)
+    env["TERM_PROGRAM"] = "tmux"
+    env["LC_TERMINAL"] = "iTerm2"
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
+    result = _run(["scripts/show_profile.py", "--root", str(tmp_path)], cwd=REPO_ROOT, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["mode"] == "state"
+
+
+def test_auto_mode_falls_back_to_inline_without_iterm(tmp_path):
+    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+    env = dict(os.environ)
+    for var in ("TERM_PROGRAM", "LC_TERMINAL", "KITTY_WINDOW_ID", "TMUX"):
+        env.pop(var, None)
+    env["TERM"] = "xterm-256color"
+    env["PATH"] = "/nonexistent"
+    result = _run(["scripts/show_profile.py", "--root", str(tmp_path)], cwd=REPO_ROOT, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["mode"] == "inline"
+
+
+def test_clear_removes_badge_and_background(tmp_path, force_iterm_env):
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--clear"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SetBadgeFormat=\a" in result.stdout
+    assert "SetBackgroundImageFile=\a" in result.stdout
+    report = json.loads(result.stdout.strip().splitlines()[-1])
+    assert report["cleared_badge"] is True
+    assert report["cleared_background"] is True
+
+
+def test_off_mode_draws_nothing(tmp_path, force_iterm_env):
+    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "off"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == ""
+
+
 def test_show_profile_explicit_profile_flag_skips_claude_md(tmp_path, force_iterm_env):
     write_result = _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "file", "tracked")
     result = _run(
@@ -185,6 +288,8 @@ def test_show_profile_explicit_profile_flag_skips_claude_md(tmp_path, force_iter
             "scripts/show_profile.py",
             "--root",
             str(tmp_path),
+            "--mode",
+            "inline",
             "--profile",
             write_result["markdown_path"],
         ],
