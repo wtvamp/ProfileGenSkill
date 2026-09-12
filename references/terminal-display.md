@@ -2,9 +2,9 @@
 
 `scripts/show_profile.py` shows a persona's picture and/or name in the user's terminal. It never errors out over an unsupported terminal or a missing persona — a persona failing to display is not worth interrupting a session over, especially when it's meant to run unattended from a hook.
 
-## The two problems, and why `state` mode is the default
+## The two problems, and why the overlay is the default
 
-**tmux only tracks text cells.** An inline image is painted into the terminal's text grid. tmux forwards the image bytes once (that's all `allow-passthrough` buys you) and then has nothing in its model to redraw, so the image is lost on the next repaint — in practice a clipped sliver. Measured on iTerm2 3.6.11 + tmux 3.7b: inline images fail under tmux; iTerm2's **badge** and **background image** both work, because they're session *state* rendered outside the grid, so tmux has nothing to clobber. They also persist until cleared, which suits the actual goal (keep knowing who you're talking to) better than a one-shot print that scrolls away. Sixel would be the one in-grid protocol tmux can natively track, but it isn't compiled into stock iTerm2 builds.
+**tmux only tracks text cells.** An inline image is painted into the terminal's text grid. tmux forwards the image bytes once (that's all `allow-passthrough` buys you) and then has nothing in its model to redraw, so the image is lost on the next repaint — in practice a clipped sliver. Measured on iTerm2 3.6.11 + tmux 3.7b: inline images fail under tmux, while iTerm2's badge and background image work (they're session state rendered outside the grid). Sixel would be the one in-grid protocol tmux can natively track, but it isn't compiled into stock iTerm2 builds. The conclusion is that no *in-terminal* image channel is both reliable under tmux and ours to use — hence the overlay window, which doesn't ask the terminal to draw anything at all.
 
 **An agent's shell tool has no tty.** When Claude runs `show_profile.py` via its Bash tool, stdout is captured for the model rather than attached to the terminal, so *nothing* written there — escape sequence or plain text — reaches the user's screen. `profilegen/termstate.py::resolve_target_tty()` handles this: when stdout isn't a tty it asks tmux for the active pane's device (`#{pane_tty}`) and writes the sequences straight to it. That's safe only because badge/background move no cursor and paint no cells, so injecting them into a pane running a TUI is inert.
 
@@ -12,14 +12,19 @@
 
 | `--mode` | What it does | Where it works |
 |---|---|---|
-| `state` | iTerm2 badge (the name) + background image (the picture) | iTerm2, with or without tmux |
+| `hud` | A small always-on-top, click-through overlay window pinned to a corner of the terminal window, showing the picture (animated for a GIF persona) and the name | macOS (needs `swiftc` from the Xcode command line tools) |
 | `inline` | Inline image painted into the text grid via `termimg.py` | Plain terminals; degrades to a sliver under tmux |
-| `auto` (default) | `state` when iTerm2 is detected, else `inline` | — |
+| `state` | iTerm2 badge (name) + background image (picture) | iTerm2, incl. tmux — but **overwrites user-owned settings**, so it's opt-in only |
+| `auto` (default) | `hud` where supported, else `inline` | — |
 | `off` | Draws nothing | — |
 
-`--clear` removes the badge/background. iTerm2 is detected via `$TERM_PROGRAM == "iTerm.app"` **or** `$LC_TERMINAL == "iTerm2"` — the latter matters because tmux rewrites `$TERM_PROGRAM` to `tmux`, while `LC_TERMINAL` (an `LC_*` variable) is forwarded through tmux and ssh intact.
+`--clear` stops the overlay and clears any badge/background. `--avatar`, `--corner` (`tr`/`tl`/`br`/`bl`) and `--margin` tune the overlay's size and placement.
 
-When stdout isn't a tty, `show_profile.py` also prints one JSON object per persona (`{"name", "mode", "badge", "background", "inline"}`) so a calling program can tell what was actually delivered. When a human is watching a real terminal, it prints nothing.
+**Why `state` is never auto-selected.** It works by setting iTerm2's session background image — a slot that belongs to the user. Anyone with a configured background loses it, and clearing sets empty rather than restoring theirs. A feature shouldn't appropriate a user-owned setting, so `state` stayed available but demoted.
+
+**Why the overlay is a separate window.** It consumes no terminal rows, touches no configuration, and doesn't depend on any terminal image protocol — so tmux, the shell and the emulator are all irrelevant to it, and animated GIF personas actually animate (via `NSImageView`, which drives GIF frames itself; drawing an `NSImage` by hand only ever renders frame one).
+
+**tmux window awareness.** Several tmux windows share one terminal window, so "is the terminal frontmost" can't tell the overlay that its tmux window has been switched away from. The overlay is passed its `TMUX_PANE` and asks tmux (`#{window_active}#{session_attached}`) whether it should be on screen. For the same reason each pane gets its own pid file (`~/.cache/profile-gen/hud-<pane>.pid`) and stopping one persona's overlay never touches another session's.
 
 ## What gets shown, and when
 
@@ -60,7 +65,7 @@ iTerm2/WezTerm animate a GIF natively — no special handling needed, the raw by
 
 Both iTerm2 and Kitty sequences get wrapped in tmux's passthrough escape (`\ePtmux; ... \e\\`) whenever `$TMUX` is set. This requires `set -g allow-passthrough on` in the user's tmux config — tmux blocks passthrough by default and there's no way to detect that setting from here, so a silently-blocked image inside tmux most likely means that line is missing.
 
-Even with `allow-passthrough on`, plain tmux can only show an *inline* image for a moment, for the grid reason described at the top of this document. This is why `state` mode exists and is the default on iTerm2 — it sidesteps the problem entirely rather than fighting it, and needs no tmux configuration at all. `tmux -CC attach` (iTerm2's native tmux integration, where iTerm2 renders each pane as a real window/tab instead of tmux painting a shared text grid) would make inline images work too, but it's a much bigger workflow change and `state` mode makes it unnecessary.
+Even with `allow-passthrough on`, plain tmux can only show an *inline* image for a moment, for the grid reason described at the top of this document. The default `hud` mode sidesteps this entirely and needs no tmux configuration at all — `allow-passthrough` only matters for `inline`/`state`. `tmux -CC attach` (iTerm2's native tmux integration, where iTerm2 renders each pane as a real window/tab instead of tmux painting a shared text grid) would make inline images work too, but it's a much bigger workflow change that the overlay makes unnecessary.
 
 ## Wiring persistent display via a SessionStart hook
 

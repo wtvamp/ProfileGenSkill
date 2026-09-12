@@ -219,19 +219,38 @@ def test_state_mode_respects_display_flags(tmp_path, force_iterm_env):
     assert report["background"] is False
 
 
-def test_auto_mode_picks_state_for_iterm(tmp_path, force_iterm_env):
-    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+@pytest.mark.skipif(sys.platform != "darwin", reason="hud overlay is macOS-only")
+def test_auto_mode_picks_hud_on_macos(tmp_path, force_iterm_env):
+    # both display flags off, so the mode is still selected but no overlay window is spawned --
+    # a test run must not leave a floating window on the developer's screen.
+    _write_profile(
+        tmp_path,
+        "Ada Sterling",
+        "ada-sterling",
+        "claude-md-ref",
+        "tracked",
+        display={"image": False, "name": False},
+    )
     result = _run(
         ["scripts/show_profile.py", "--root", str(tmp_path)], cwd=REPO_ROOT, env=force_iterm_env
     )
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
-    assert report["mode"] == "state"
+    assert report["mode"] == "hud"
+    assert report["hud"] is False
 
 
-def test_auto_mode_picks_state_for_iterm_inside_tmux(tmp_path):
-    # TERM_PROGRAM says "tmux" inside a session; LC_TERMINAL is what still identifies iTerm2.
-    _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+def test_auto_never_picks_state_which_overwrites_user_settings(tmp_path):
+    # `state` sets iTerm2's background image, which belongs to the user -- it must stay opt-in
+    # even when iTerm2 is unmistakably the terminal.
+    _write_profile(
+        tmp_path,
+        "Ada Sterling",
+        "ada-sterling",
+        "claude-md-ref",
+        "tracked",
+        display={"image": False, "name": False},
+    )
     env = dict(os.environ)
     env["TERM_PROGRAM"] = "tmux"
     env["LC_TERMINAL"] = "iTerm2"
@@ -240,7 +259,7 @@ def test_auto_mode_picks_state_for_iterm_inside_tmux(tmp_path):
     result = _run(["scripts/show_profile.py", "--root", str(tmp_path)], cwd=REPO_ROOT, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
-    assert report["mode"] == "state"
+    assert report["mode"] != "state"
 
 
 def test_auto_mode_falls_back_to_inline_without_iterm(tmp_path):
@@ -257,10 +276,14 @@ def test_auto_mode_falls_back_to_inline_without_iterm(tmp_path):
 
 
 def test_clear_removes_badge_and_background(tmp_path, force_iterm_env):
+    # Point HOME at the tmp dir so hud.CACHE_DIR resolves there: otherwise this subprocess
+    # inherits the real HOME and TMUX_PANE and would stop the developer's own running overlay.
+    env = dict(force_iterm_env)
+    env["HOME"] = str(tmp_path)
     result = _run(
         ["scripts/show_profile.py", "--root", str(tmp_path), "--clear"],
         cwd=REPO_ROOT,
-        env=force_iterm_env,
+        env=env,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "SetBadgeFormat=\a" in result.stdout
