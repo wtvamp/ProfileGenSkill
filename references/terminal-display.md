@@ -18,7 +18,9 @@
 | `auto` (default) | `hud` where supported, else `inline` | — |
 | `off` | Draws nothing | — |
 
-`--clear` stops the overlay and clears any badge/background. `--avatar`, `--corner` (`tr`/`tl`/`br`/`bl`) and `--margin` tune the overlay's size and placement.
+`--clear` stops the overlay and clears any badge/background. `--avatar`/`--avatar-min`, `--corner` (`tr`/`tl`/`br`/`bl`) and `--margin` tune the overlay's size and placement.
+
+**The orb scales to its pane.** Under tmux the overlay is pinned over the persona's own pane, and its diameter is 30% of that pane's shorter side, clamped to `[--avatar-min, --avatar]` (40–104 pt by default); outside tmux the same rule applies to the whole terminal window. A half-screen pane lands at the old fixed 104 pt, a narrow sidebar pane gets a proportionally smaller orb instead of one covering most of its text, and the name's font follows. Both platform implementations use the same fraction so they size identically for the same pane.
 
 **Why `state` is never auto-selected.** It works by setting iTerm2's session background image — a slot that belongs to the user. Anyone with a configured background loses it, and clearing sets empty rather than restoring theirs. A feature shouldn't appropriate a user-owned setting, so `state` stayed available but demoted.
 
