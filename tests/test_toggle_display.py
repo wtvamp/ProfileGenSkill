@@ -164,7 +164,11 @@ def test_show_profile_reflects_toggled_state(tmp_path):
     env.pop("TMUX", None)
     env.pop("KITTY_WINDOW_ID", None)
 
-    result = _run(["scripts/show_profile.py", "--root", str(tmp_path)], cwd=REPO_ROOT, env=env)
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline"],
+        cwd=REPO_ROOT,
+        env=env,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "\033]1337" not in result.stdout  # image stayed off
     assert "Ada Sterling" in result.stdout  # name still on
