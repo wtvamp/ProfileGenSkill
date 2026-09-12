@@ -14,7 +14,7 @@ FIELDS = {
     "voice": "af_jessica",
     "personality": "Warm, precise, and a little wry.",
     "nsfw": False,
-    "display": {"image": True, "name": False},
+    "display": {"image": True, "name": False, "autostart": True},
     "generation": {
         "backend": "mock",
         "model": "mock-v1",
@@ -114,7 +114,8 @@ def test_set_display_flags_both_fields():
     rendered = render.render_standalone(FIELDS)
     updated = frontmatter.set_display_flags(rendered, image=False, name=True)
     parsed = frontmatter.extract_frontmatter(updated)
-    assert parsed["display"] == {"image": False, "name": True}
+    assert parsed["display"]["image"] is False
+    assert parsed["display"]["name"] is True
 
 
 def test_set_display_flags_none_none_is_noop():
@@ -139,3 +140,30 @@ def test_set_display_flags_scoped_region_leaves_other_personas_alone():
     second = frontmatter.extract_embedded_block(updated, "second")
     assert first["display"]["image"] is False
     assert second["display"]["image"] is True
+
+
+def test_set_display_flags_appends_key_missing_from_an_older_profile():
+    # a profile written before `autostart` existed has a two-key display block; setting the new
+    # flag must add it rather than fail
+    older = "---\nname: \"Ada\"\ndisplay:\n  image: true\n  name: true\ngeneration:\n  seed: 1\n---\n"
+    updated = frontmatter.set_display_flags(older, autostart=False)
+    parsed = frontmatter.extract_frontmatter(updated)
+    assert parsed["display"] == {"image": True, "name": True, "autostart": False}
+    assert parsed["generation"]["seed"] == 1  # nothing after the block disturbed
+
+
+def test_set_display_flags_is_key_order_independent():
+    scrambled = "---\ndisplay:\n  autostart: true\n  name: true\n  image: true\n---\n"
+    updated = frontmatter.set_display_flags(scrambled, image=False, autostart=False)
+    parsed = frontmatter.extract_frontmatter(updated)
+    assert parsed["display"]["image"] is False
+    assert parsed["display"]["autostart"] is False
+    assert parsed["display"]["name"] is True
+
+
+def test_set_display_flags_autostart_roundtrips():
+    rendered = render.render_standalone(FIELDS)
+    updated = frontmatter.set_display_flags(rendered, autostart=False)
+    parsed = frontmatter.extract_frontmatter(updated)
+    assert parsed["display"]["autostart"] is False
+    assert parsed["display"]["image"] is True  # untouched

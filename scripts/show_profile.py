@@ -45,6 +45,11 @@ in every "nothing to show" case.
 Each persona's own `display.image`/`display.name` preference decides what's shown, defaulting to
 true/true. --show-image/--no-image and --show-name/--no-name override that for this invocation
 only, without touching the persona's stored preference (see toggle_display.py to change it).
+
+`display.autostart` is a separate question from those: it decides whether a persona appears *on
+its own* at session start, not what gets drawn when it does. It's only consulted under
+--autostart-only, which is what a SessionStart hook passes -- so a persona can be set to stay
+quiet until asked for by `/display-profile` while still displaying normally when it is.
 """
 from __future__ import annotations
 
@@ -156,6 +161,11 @@ def main() -> None:
         "iTerm2 badge+background (state -- overwrites user settings), or auto",
     )
     parser.add_argument("--clear", action="store_true", help="stop the overlay / clear badge+background")
+    parser.add_argument(
+        "--autostart-only",
+        action="store_true",
+        help="skip personas whose display.autostart is false (what a SessionStart hook uses)",
+    )
     parser.add_argument("--avatar", type=int, default=hud.DEFAULT_AVATAR, help="hud avatar size in points")
     parser.add_argument(
         "--corner", choices=["tr", "tl", "br", "bl"], default=hud.DEFAULT_CORNER,
@@ -187,13 +197,21 @@ def main() -> None:
     root = Path(args.root).resolve()
     reports = []
 
+    def _autostart_allows(fields: dict) -> bool:
+        if not args.autostart_only:
+            return True
+        display = fields.get("display") if isinstance(fields.get("display"), dict) else {}
+        return bool(display.get("autostart", True))
+
     if args.profile:
         fields = _load_markdown_fields(Path(args.profile))
-        if fields:
+        if fields and _autostart_allows(fields):
             reports.append(_display_one(fields, root, args, mode))
     else:
         for persona in discovery.discover_personas(root):
             if args.slug and persona.slug != args.slug:
+                continue
+            if not _autostart_allows(persona.fields):
                 continue
             reports.append(_display_one(persona.fields, root, args, mode))
 

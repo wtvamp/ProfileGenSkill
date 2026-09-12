@@ -7,7 +7,10 @@ persona.md/profiles/<slug>/<slug>.md for claude-md-ref, or the right slug's own 
 region inside CLAUDE.md itself for a fully-embedded (claude-md) persona. Only the display: block
 is touched; nothing else in the file is regenerated or reformatted.
 
-At least one of --image/--name is required. Prints one JSON object per persona changed:
+At least one of --image/--name/--autostart is required. --image/--name control what is drawn;
+--autostart controls whether a SessionStart hook shows this persona on its own, which is a
+separate question -- a persona can stay quiet at startup while still displaying when asked for.
+A persona written before a flag existed simply has it appended to its display: block. Prints one JSON object per persona changed:
 {"slug", "markdown_path", "display": {"image": bool, "name": bool}}, or {"error": "..."}
 (nonzero exit) if nothing was found to change.
 """
@@ -38,10 +41,15 @@ def main() -> None:
     )
     parser.add_argument("--image", choices=["on", "off"])
     parser.add_argument("--name", choices=["on", "off"])
+    parser.add_argument(
+        "--autostart",
+        choices=["on", "off"],
+        help="whether a SessionStart hook shows this persona automatically",
+    )
     args = parser.parse_args()
 
-    if args.image is None and args.name is None:
-        _fail("nothing to do: pass --image on|off and/or --name on|off")
+    if args.image is None and args.name is None and args.autostart is None:
+        _fail("nothing to do: pass --image, --name and/or --autostart as on|off")
         return
 
     root = Path(args.root).resolve()
@@ -55,6 +63,7 @@ def main() -> None:
 
     image = (args.image == "on") if args.image else None
     name = (args.name == "on") if args.name else None
+    autostart = (args.autostart == "on") if args.autostart else None
 
     results = []
     for persona in personas:
@@ -72,7 +81,9 @@ def main() -> None:
                 return
 
         try:
-            new_text = frontmatter.set_display_flags(text, image=image, name=name, region=region)
+            new_text = frontmatter.set_display_flags(
+                text, image=image, name=name, autostart=autostart, region=region
+            )
         except ValueError as e:
             _fail(f"{persona.markdown_path}: {e}")
             return
