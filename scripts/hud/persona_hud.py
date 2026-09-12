@@ -328,7 +328,8 @@ class HUD:
 
         w = self.root.winfo_width()
         h = self.root.winfo_height()
-        m = self.args.margin
+        # The inset scales with the orb, same as the macOS overlay.
+        m = max(8, round(self.args.margin * self.avatar_size / max(self.args.avatar, 1)))
         x = left + m if self.args.corner.endswith("l") else right - w - m
         y = top + m if self.args.corner.startswith("t") else bottom - h - m
         self.root.geometry(f"+{int(x)}+{int(y)}")
