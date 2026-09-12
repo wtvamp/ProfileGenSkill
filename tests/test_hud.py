@@ -218,6 +218,29 @@ def test_owner_pid_finds_claude_in_the_process_tree(monkeypatch):
     assert hud.owner_pid() == 200
 
 
+def test_owner_pid_skips_bg_spare_daemon(monkeypatch):
+    # "claude bg-spare" is a pre-warmed slot in the background-agent daemon pool, not a session --
+    # it outlives any one session, so watching it would orphan the overlay (or kill it out from
+    # under a still-running session that never owned it). Keep walking past it.
+    monkeypatch.setattr(hud.os, "getppid", lambda: 100)
+    monkeypatch.setattr(
+        hud,
+        "_parent_pids_posix",
+        lambda pid: [(100, "claude bg-spare"), (200, "claude"), (300, "tmux")],
+    )
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
+    assert hud.owner_pid() == 200
+
+
+def test_owner_pid_none_when_only_bg_spare_in_tree(monkeypatch):
+    monkeypatch.setattr(hud.os, "getppid", lambda: 100)
+    monkeypatch.setattr(
+        hud, "_parent_pids_posix", lambda pid: [(100, "claude bg-spare"), (200, "tmux")]
+    )
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
+    assert hud.owner_pid() is None
+
+
 def test_owner_pid_none_when_claude_not_in_tree(monkeypatch):
     monkeypatch.setattr(hud.os, "getppid", lambda: 100)
     monkeypatch.setattr(hud, "_parent_pids_posix", lambda pid: [(100, "zsh"), (200, "tmux")])
