@@ -33,6 +33,13 @@ WS_EX_TOOLWINDOW = 0x00000080
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# Fraction of the pinned area's shorter side the orb occupies -- the same constant as
+# PersonaHUD.swift's avatarFraction, so the two platforms size identically for the same pane.
+AVATAR_FRACTION = 0.3
+# Orb sizes are snapped to this step so dragging a pane edge doesn't re-decode the GIF on every
+# pixel of movement; frames are cached per snapped size.
+AVATAR_STEP = 4
+
 DEFAULT_OWNERS = (
     "windowsterminal.exe", "wt.exe", "conhost.exe", "openconsole.exe",
     "powershell.exe", "pwsh.exe", "cmd.exe", "alacritty.exe", "wezterm-gui.exe",
@@ -48,7 +55,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="")
     parser.add_argument("--name", default="")
+    # `--avatar` is the orb's diameter for a roomy pane and `--avatar-min` its floor; the actual
+    # size is derived every tick from the area the overlay is pinned to (see HUD._fit_to).
     parser.add_argument("--avatar", type=int, default=104)
+    parser.add_argument("--avatar-min", type=int, default=40)
     parser.add_argument("--corner", default="tr", choices=["tr", "tl", "br", "bl"])
     parser.add_argument("--margin", type=int, default=36)
     parser.add_argument("--owner", default="", help="comma-separated terminal process names")
@@ -221,26 +231,57 @@ class HUD:
         self.root.attributes("-transparentcolor", TRANSPARENT_KEY)
         self.root.withdraw()
 
-        self.avatar = AvatarFrames(args.image, args.avatar)
+        # Frames are prepared per orb size and cached, so a pane that keeps flipping between two
+        # sizes doesn't keep re-decoding the GIF. Starts at the maximum; the first tick fits it.
+        self._frames_by_size: dict[int, AvatarFrames] = {}
+        self.avatar_size = 0
+        self.avatar = AvatarFrames("", 0)
         self.frame_index = 0
+        self.image_label: tk.Label | None = None
+        self.name_labels: list[tk.Label] = []
 
-        if self.avatar.frames:
-            self.image_label = tk.Label(
-                self.root, image=self.avatar.frames[0], bd=0, bg=TRANSPARENT_KEY
-            )
+        if args.image:
+            self.image_label = tk.Label(self.root, bd=0, bg=TRANSPARENT_KEY)
             self.image_label.pack()
 
         if args.name:
             # two offset labels fake a drop shadow, so the name stays legible over any background
             holder = tk.Frame(self.root, bg=TRANSPARENT_KEY)
             holder.pack(fill="x")
-            tk.Label(holder, text=args.name, bd=0, bg=TRANSPARENT_KEY, fg="#000000",
-                     font=("Segoe UI", 10, "bold")).place(x=1, y=1, relwidth=1, anchor="nw")
-            tk.Label(holder, text=args.name, bd=0, bg=TRANSPARENT_KEY, fg="#ffffff",
-                     font=("Segoe UI", 10, "bold")).pack(fill="x")
+            shadow = tk.Label(holder, text=args.name, bd=0, bg=TRANSPARENT_KEY, fg="#000000")
+            shadow.place(x=1, y=1, relwidth=1, anchor="nw")
+            face = tk.Label(holder, text=args.name, bd=0, bg=TRANSPARENT_KEY, fg="#ffffff")
+            face.pack(fill="x")
+            self.name_labels = [shadow, face]
 
-        self.root.update_idletasks()
+        self._fit_to(args.avatar)
         self._apply_click_through()
+
+    def _fit_to(self, avatar: int) -> None:
+        """Re-fit the orb and its label to a new diameter (no-op when unchanged)."""
+        avatar = max(AVATAR_STEP, int(round(avatar / AVATAR_STEP)) * AVATAR_STEP)
+        if avatar == self.avatar_size:
+            return
+        self.avatar_size = avatar
+        if self.image_label is not None:
+            if avatar not in self._frames_by_size:
+                if len(self._frames_by_size) >= 12:
+                    self._frames_by_size.clear()
+                self._frames_by_size[avatar] = AvatarFrames(self.args.image, avatar)
+            self.avatar = self._frames_by_size[avatar]
+            self.frame_index = 0
+            if self.avatar.frames:
+                self.image_label.configure(image=self.avatar.frames[0])
+        font = ("Segoe UI", max(8, round(avatar * 10 / 104)), "bold")
+        for label in self.name_labels:
+            label.configure(font=font)
+        self.root.update_idletasks()
+
+    def _avatar_size_for(self, width: float, height: float) -> int:
+        """Orb diameter for a pinned area of this size -- a fraction of its shorter side, clamped
+        to [--avatar-min, --avatar] so it neither vanishes nor outgrows the configured size."""
+        wanted = min(width, height) * AVATAR_FRACTION
+        return int(round(min(self.args.avatar, max(self.args.avatar_min, wanted))))
 
     def _apply_click_through(self) -> None:
         hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
@@ -249,7 +290,7 @@ class HUD:
         ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, styles)
 
     def _animate(self) -> None:
-        if len(self.avatar.frames) > 1:
+        if len(self.avatar.frames) > 1 and self.image_label is not None:
             self.frame_index = (self.frame_index + 1) % len(self.avatar.frames)
             self.image_label.configure(image=self.avatar.frames[self.frame_index])
             delay = self.avatar.durations[self.frame_index]
@@ -279,6 +320,9 @@ class HUD:
             width, height = right - left, bottom - top
             left, right = left + fx0 * width, left + fx1 * width
             top, bottom = top + fy0 * height, top + fy1 * height
+
+        # Size to the pane (or window) before placing, so the corner offset uses the new size.
+        self._fit_to(self._avatar_size_for(right - left, bottom - top))
 
         w = self.root.winfo_width()
         h = self.root.winfo_height()

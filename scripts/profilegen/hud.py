@@ -26,7 +26,12 @@ HUD_DIR = Path(__file__).resolve().parent.parent / "hud"
 SOURCE = HUD_DIR / "PersonaHUD.swift"
 WINDOWS_SOURCE = HUD_DIR / "persona_hud.py"
 
+# The orb's diameter for a roomy pane, and its floor. The overlay derives the actual size on every
+# tick from the area it's pinned to (the tmux pane, or the whole terminal window outside tmux), so
+# a narrow sidebar pane gets a proportionally smaller orb instead of one that covers half its
+# text; these two just bound that.
 DEFAULT_AVATAR = 104
+DEFAULT_AVATAR_MIN = 40
 DEFAULT_CORNER = "tr"
 DEFAULT_MARGIN = 36
 
@@ -314,6 +319,7 @@ def launch(
     avatar: int = DEFAULT_AVATAR,
     corner: str = DEFAULT_CORNER,
     margin: int = DEFAULT_MARGIN,
+    avatar_min: int = DEFAULT_AVATAR_MIN,
 ) -> bool:
     """Replace any running overlay with one showing ``image_path``/``name``. False if the overlay
     isn't available (non-macOS, no swiftc, or the build failed) -- callers fall back to another
@@ -330,7 +336,8 @@ def launch(
         args = [_windows_interpreter() or sys.executable, str(binary)]
     else:
         args = [str(binary)]
-    args += ["--avatar", str(avatar), "--corner", corner, "--margin", str(margin)]
+    args += ["--avatar", str(avatar), "--avatar-min", str(avatar_min),
+             "--corner", corner, "--margin", str(margin)]
     if image_path:
         args += ["--image", str(image_path)]
     if name:

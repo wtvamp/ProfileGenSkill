@@ -16,7 +16,13 @@ import Cocoa
 struct Options {
     var imagePath = ""
     var name = ""
+    // Upper and lower bounds on the orb's diameter. The actual size is derived on every tick
+    // from the area the overlay is pinned to (the tmux pane, or the whole terminal window when
+    // not under tmux) -- see Controller.avatarSize(for:) -- so a narrow pane gets a smaller orb
+    // than a wide one instead of every pane wearing the same fixed 104 pt disc regardless of how
+    // much of it that covers. `avatar` is therefore the size for a roomy pane, not *the* size.
     var avatar: CGFloat = 104
+    var avatarMin: CGFloat = 40
     var corner = "tr"
     var margin: CGFloat = 16
     var ownerName = "iTerm2"
@@ -46,6 +52,7 @@ func parseArgs() -> Options {
         case "--image": o.imagePath = value()
         case "--name": o.name = value()
         case "--avatar": o.avatar = CGFloat(Double(value()) ?? 104)
+        case "--avatar-min": o.avatarMin = CGFloat(Double(value()) ?? 40)
         case "--corner": o.corner = value()
         case "--margin": o.margin = CGFloat(Double(value()) ?? 16)
         case "--owner": o.ownerName = value()
@@ -61,42 +68,78 @@ func parseArgs() -> Options {
 
 final class HUDView: NSView {
     let name: String
-    let avatar: CGFloat
+    private(set) var avatar: CGFloat
+    private let imageView: NSImageView?
+
+    /// Label height and font track the avatar, so a small orb isn't topped by a name block sized
+    /// for a large one; both floor out where the text would stop being legible.
+    static func labelHeight(forAvatar avatar: CGFloat, name: String) -> CGFloat {
+        name.isEmpty ? 0 : max(14, (avatar * 20 / 104).rounded())
+    }
+
+    static func fontSize(forAvatar avatar: CGFloat) -> CGFloat {
+        max(9, (avatar * 12 / 104).rounded())
+    }
+
+    static func size(forAvatar avatar: CGFloat, name: String) -> NSSize {
+        NSSize(width: max(avatar, 90),
+               height: avatar + labelHeight(forAvatar: avatar, name: name))
+    }
 
     /// The avatar is an NSImageView rather than a manual `image.draw(in:)` specifically so an
     /// animated GIF persona actually animates -- drawing an NSImage by hand only ever renders its
     /// first frame. Circular masking is done on the view's layer so it applies to every frame.
-    init(image: NSImage?, name: String, avatar: CGFloat, size: NSSize) {
+    init(image: NSImage?, name: String, avatar: CGFloat) {
         self.name = name
         self.avatar = avatar
-        super.init(frame: NSRect(origin: .zero, size: size))
-
-        guard let image = image else { return }
-        let box = NSRect(x: (size.width - avatar) / 2, y: size.height - avatar,
-                         width: avatar, height: avatar)
-        let imageView = NSImageView(frame: box)
-        imageView.image = image
-        imageView.animates = true
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.wantsLayer = true
-        imageView.layer?.cornerRadius = avatar / 2
-        imageView.layer?.masksToBounds = true
-        imageView.layer?.borderWidth = 1.5
-        imageView.layer?.borderColor = NSColor(white: 1, alpha: 0.55).cgColor
-        addSubview(imageView)
+        if let image = image {
+            let imageView = NSImageView(frame: .zero)
+            imageView.image = image
+            imageView.animates = true
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            imageView.wantsLayer = true
+            imageView.layer?.masksToBounds = true
+            imageView.layer?.borderWidth = 1.5
+            imageView.layer?.borderColor = NSColor(white: 1, alpha: 0.55).cgColor
+            self.imageView = imageView
+        } else {
+            self.imageView = nil
+        }
+        super.init(frame: NSRect(origin: .zero, size: Self.size(forAvatar: avatar, name: name)))
+        if let imageView = imageView { addSubview(imageView) }
+        place()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Re-fit everything to a new orb diameter. The controller calls this whenever the area the
+    /// overlay is pinned to changes size (a pane split or resized, the window dragged smaller),
+    /// so the orb follows the pane instead of staying one fixed size. Cheap: the image view
+    /// rescales its own frames, nothing is re-decoded.
+    func relayout(avatar: CGFloat) {
+        guard avatar != self.avatar else { return }
+        self.avatar = avatar
+        setFrameSize(Self.size(forAvatar: avatar, name: name))
+        place()
+    }
+
+    private func place() {
+        let box = NSRect(x: (bounds.width - avatar) / 2, y: bounds.height - avatar,
+                         width: avatar, height: avatar)
+        imageView?.frame = box
+        imageView?.layer?.cornerRadius = avatar / 2
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        let labelHeight: CGFloat = name.isEmpty ? 0 : 20
         guard !name.isEmpty else { return }
+        let labelHeight = Self.labelHeight(forAvatar: avatar, name: name)
         let shadow = NSShadow()
         shadow.shadowColor = NSColor.black.withAlphaComponent(0.9)
         shadow.shadowBlurRadius = 3
         shadow.shadowOffset = NSSize(width: 0, height: -1)
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: Self.fontSize(forAvatar: avatar), weight: .semibold),
             .foregroundColor: NSColor.white,
             .shadow: shadow,
         ]
@@ -115,12 +158,8 @@ final class Controller: NSObject {
     init(opts: Options) {
         self.opts = opts
         let image = opts.imagePath.isEmpty ? nil : NSImage(contentsOfFile: opts.imagePath)
-        let labelHeight: CGFloat = opts.name.isEmpty ? 0 : 20
-        let width = max(opts.avatar, 90)
-        let height = opts.avatar + labelHeight
-
-        view = HUDView(image: image, name: opts.name, avatar: opts.avatar,
-                       size: NSSize(width: width, height: height))
+        // Starts at the maximum; the first tick shrinks it to fit before it's ever shown.
+        view = HUDView(image: image, name: opts.name, avatar: opts.avatar)
 
         panel = NSPanel(contentRect: view.frame,
                         styleMask: [.borderless, .nonactivatingPanel],
@@ -264,6 +303,18 @@ final class Controller: NSObject {
     /// terminal's text area does not.
     static let titleBarHeight: CGFloat = 28
 
+    /// Fraction of the pinned area's shorter side the orb occupies. At 0.3 a half-height pane in a
+    /// full-screen terminal lands right around the 104 pt default, so roomy layouts look the same
+    /// as before, and a third-of-the-screen sidebar pane gets an orb that no longer covers most of
+    /// its text. Clamped to `[avatarMin, avatar]` so it never vanishes and never outgrows the
+    /// configured size.
+    static let avatarFraction: CGFloat = 0.3
+
+    func avatarSize(for target: CGRect) -> CGFloat {
+        let wanted = min(target.width, target.height) * Self.avatarFraction
+        return min(opts.avatar, max(opts.avatarMin, wanted)).rounded()
+    }
+
     /// Whether the session that owns this overlay is still running. `kill(pid, 0)` sends no
     /// signal -- it only reports whether the process can be signalled, i.e. whether it exists.
     func ownerAlive() -> Bool {
@@ -316,6 +367,13 @@ final class Controller: NSObject {
                 y: content.maxY - pane.fy1 * content.height,
                 width: (pane.fx1 - pane.fx0) * content.width,
                 height: (pane.fy1 - pane.fy0) * content.height)
+        }
+
+        // Size to the pane (or window) before placing, so the corner offset uses the new size.
+        let avatar = avatarSize(for: target)
+        if avatar != view.avatar {
+            view.relayout(avatar: avatar)
+            panel.setContentSize(view.frame.size)
         }
 
         let s = panel.frame.size

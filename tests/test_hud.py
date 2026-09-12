@@ -448,3 +448,47 @@ def test_controlling_tty_tmux_uses_client_tty(monkeypatch):
 
     monkeypatch.setattr(hud.subprocess, "run", fake_run)
     assert hud._controlling_tty("%3") == "/dev/ttys010"
+
+
+def test_launch_passes_avatar_bounds_by_default(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    args = captured["args"]
+    # The overlay derives the real size from its pane; these are the bounds it clamps to.
+    assert args[args.index("--avatar") + 1] == str(hud.DEFAULT_AVATAR)
+    assert args[args.index("--avatar-min") + 1] == str(hud.DEFAULT_AVATAR_MIN)
+    assert hud.DEFAULT_AVATAR_MIN < hud.DEFAULT_AVATAR
+
+
+def test_launch_passes_custom_avatar_bounds(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada", avatar=160, avatar_min=64) is True
+    args = captured["args"]
+    assert args[args.index("--avatar") + 1] == "160"
+    assert args[args.index("--avatar-min") + 1] == "64"

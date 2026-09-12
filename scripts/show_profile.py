@@ -99,6 +99,7 @@ def _display_one(fields: dict, root: Path, args: argparse.Namespace, mode: str) 
             str(image_path) if (show_image and image_path and image_path.is_file()) else None,
             str(name) if (show_name and name) else None,
             avatar=args.avatar,
+            avatar_min=args.avatar_min,
             corner=args.corner,
             margin=args.margin,
         )
@@ -166,7 +167,14 @@ def main() -> None:
         action="store_true",
         help="skip personas whose display.autostart is false (what a SessionStart hook uses)",
     )
-    parser.add_argument("--avatar", type=int, default=hud.DEFAULT_AVATAR, help="hud avatar size in points")
+    parser.add_argument(
+        "--avatar", type=int, default=hud.DEFAULT_AVATAR,
+        help="hud avatar's largest size in points; it shrinks to fit narrower tmux panes/windows",
+    )
+    parser.add_argument(
+        "--avatar-min", type=int, default=hud.DEFAULT_AVATAR_MIN,
+        help="hud avatar's smallest size in points, however narrow the pane gets",
+    )
     parser.add_argument(
         "--corner", choices=["tr", "tl", "br", "bl"], default=hud.DEFAULT_CORNER,
         help="hud corner of the terminal window (default: top-right)",
