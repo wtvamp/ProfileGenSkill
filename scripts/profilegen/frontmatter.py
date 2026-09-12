@@ -101,3 +101,62 @@ def extract_embedded_block(claude_md_text: str, slug: str) -> dict | None:
         return None
     fenced = block.split("```yaml", 1)[1].split("```", 1)[0]
     return parse_flat_yaml(fenced)
+
+
+def block_span(claude_md_text: str, slug: str) -> tuple[int, int] | None:
+    """Character-offset ``(start, end)`` span of the ``<!-- profile-gen:start slug=... -->``
+    ... ``<!-- profile-gen:end ... -->`` marker block for ``slug`` (markers included), or None if
+    not present. Used to confine an edit (see ``set_display_flags``) to one persona's own region
+    of a CLAUDE.md that may hold more than one embedded persona."""
+    start_marker = f"<!-- profile-gen:start slug={slug} -->"
+    end_marker = f"<!-- profile-gen:end slug={slug} -->"
+    start_idx = claude_md_text.find(start_marker)
+    if start_idx == -1:
+        return None
+    end_idx = claude_md_text.find(end_marker, start_idx)
+    if end_idx == -1:
+        return None
+    return start_idx, end_idx + len(end_marker)
+
+
+_DISPLAY_IMAGE_RE = r"(display:\n  image: )(?:true|false)"
+_DISPLAY_NAME_RE = r"(display:\n  image: (?:true|false)\n  name: )(?:true|false)"
+
+
+def set_display_flags(
+    text: str,
+    *,
+    image: bool | None = None,
+    name: bool | None = None,
+    region: tuple[int, int] | None = None,
+) -> str:
+    """Flip ``display.image``/``display.name`` booleans in profile-gen's fixed
+    ``display:\\n  image: <bool>\\n  name: <bool>`` block (the exact, unvarying shape
+    `templates/*.j2` render -- see their module docstring). Only the flags actually passed
+    (not ``None``) are changed; passing neither is a no-op.
+
+    ``region`` confines the edit to that ``(start, end)`` character slice of ``text`` -- pass
+    ``frontmatter.block_span(text, slug)`` when ``text`` is a CLAUDE.md that may hold more than
+    one embedded persona's block, so a different persona's ``display:`` is never touched.
+    Omit it for a persona's own standalone markdown file, which has exactly one such block.
+
+    Raises ``ValueError`` if no ``display:`` block is found within the target region.
+    """
+    start, end = region if region is not None else (0, len(text))
+    segment = text[start:end]
+
+    if image is not None:
+        segment, count = re.subn(
+            _DISPLAY_IMAGE_RE, r"\g<1>" + ("true" if image else "false"), segment, count=1
+        )
+        if count == 0:
+            raise ValueError("no display.image field found in the target region")
+
+    if name is not None:
+        segment, count = re.subn(
+            _DISPLAY_NAME_RE, r"\g<1>" + ("true" if name else "false"), segment, count=1
+        )
+        if count == 0:
+            raise ValueError("no display.name field found in the target region")
+
+    return text[:start] + segment + text[end:]

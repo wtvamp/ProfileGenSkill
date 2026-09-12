@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from profilegen import frontmatter, render  # noqa: E402
@@ -86,3 +88,54 @@ def test_extract_embedded_block_roundtrips_render_embedded():
 def test_extract_embedded_block_missing_slug_returns_none():
     rendered = render.render_embedded(FIELDS)
     assert frontmatter.extract_embedded_block(rendered, "no-such-slug") is None
+
+
+def test_block_span_covers_markers_and_missing_slug_is_none():
+    text = (
+        "<!-- profile-gen:start slug=ada -->\ncontent here\n<!-- profile-gen:end slug=ada -->\n"
+    )
+    span = frontmatter.block_span(text, "ada")
+    assert span is not None
+    start, end = span
+    assert text[start:end].startswith("<!-- profile-gen:start slug=ada -->")
+    assert text[start:end].endswith("<!-- profile-gen:end slug=ada -->")
+    assert frontmatter.block_span(text, "someone-else") is None
+
+
+def test_set_display_flags_whole_text_no_region():
+    rendered = render.render_standalone(FIELDS)
+    updated = frontmatter.set_display_flags(rendered, image=False)
+    parsed = frontmatter.extract_frontmatter(updated)
+    assert parsed["display"]["image"] is False
+    assert parsed["display"]["name"] is False  # untouched from FIELDS' own False
+
+
+def test_set_display_flags_both_fields():
+    rendered = render.render_standalone(FIELDS)
+    updated = frontmatter.set_display_flags(rendered, image=False, name=True)
+    parsed = frontmatter.extract_frontmatter(updated)
+    assert parsed["display"] == {"image": False, "name": True}
+
+
+def test_set_display_flags_none_none_is_noop():
+    rendered = render.render_standalone(FIELDS)
+    assert frontmatter.set_display_flags(rendered) == rendered
+
+
+def test_set_display_flags_missing_block_raises():
+    with pytest.raises(ValueError):
+        frontmatter.set_display_flags("no display block here", image=True)
+
+
+def test_set_display_flags_scoped_region_leaves_other_personas_alone():
+    fields_a = dict(FIELDS, name="First", slug="first", display={"image": True, "name": True})
+    fields_b = dict(FIELDS, name="Second", slug="second", display={"image": True, "name": True})
+    text = render.render_embedded(fields_a) + "\n" + render.render_embedded(fields_b)
+
+    span = frontmatter.block_span(text, "first")
+    updated = frontmatter.set_display_flags(text, image=False, region=span)
+
+    first = frontmatter.extract_embedded_block(updated, "first")
+    second = frontmatter.extract_embedded_block(updated, "second")
+    assert first["display"]["image"] is False
+    assert second["display"]["image"] is True

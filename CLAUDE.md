@@ -17,15 +17,17 @@ The skill is implemented. Entry point: `SKILL.md` (frontmatter + step-by-step in
   - `gif.py` — synthetic "living portrait" GIF assembly (pan/zoom fallback when no native animation backend is available).
   - `comfyui_inventory.py` — parses a ComfyUI server's `/object_info` into checkpoints/LoRAs/samplers and native-animation-family detection.
   - `render.py` — mini regex-based template engine for `templates/*.j2` (no Jinja dependency; see its module docstring for the supported `{{ field }}` / `{% if field %}...{% endif %}` syntax).
-  - `frontmatter.py` — the read-side counterpart to `render.py`: a small dependency-free parser for profile-gen's own generated markdown (frontmatter block, CLAUDE.md marker blocks, embedded fenced-YAML), used by `show_profile.py` to discover personas.
+  - `frontmatter.py` — the read-side counterpart to `render.py`: a small dependency-free parser for profile-gen's own generated markdown (frontmatter block, CLAUDE.md marker blocks, embedded fenced-YAML), plus `block_span()`/`set_display_flags()` for editing a persona's `display:` block in place without touching anything else in the file.
+  - `discovery.py` — shared "find every persona referenced from this project's CLAUDE.md" logic used by both `show_profile.py` and `toggle_display.py`.
   - `termimg.py` — terminal inline-image display: detects iTerm2/WezTerm, Kitty/Ghostty, or sixel (`img2sixel`) and renders a persona's picture sized to ~10% of terminal width, with a silent no-op when nothing is supported.
   - `storage.py` — path policy, slugify, idempotent `.gitignore`/`CLAUDE.md` block edits.
   - `http.py` — thin urllib wrapper used by the hosted backends.
-- CLI entry points, each printing one JSON object to stdout: `scripts/check_config.py`, `scripts/inspect_comfyui.py`, `scripts/generate_image.py`, `scripts/make_gif.py`, `scripts/write_profile.py`, `scripts/show_profile.py` (the last one is the exception — it writes terminal escape sequences/plain text, not JSON, since its whole point is a human-facing terminal preview).
+- CLI entry points, each printing one JSON object to stdout: `scripts/check_config.py`, `scripts/inspect_comfyui.py`, `scripts/generate_image.py`, `scripts/make_gif.py`, `scripts/write_profile.py`, `scripts/toggle_display.py`, `scripts/show_profile.py` (the last one is the exception — it writes terminal escape sequences/plain text, not JSON, since its whole point is a human-facing terminal preview).
+- `~/.claude/commands/display-profile.md` — the `/display-profile` user command wrapping `show_profile.py`/`toggle_display.py` for interactive on/off control and previewing (lives outside this repo, in the user's own Claude Code config, since it's a lightweight command rather than a second skill).
 - `templates/*.j2` — the standalone and CLAUDE.md-embedded markdown templates rendered by `render.py`.
 - `references/*.md` — progressive-disclosure docs `SKILL.md` points Claude to on demand: `profile-schema.md`, `prompting.md`, `comfyui.md`, `comfyui-workflow-authoring.md`, `backends.md`, `voices.md`, `terminal-display.md` (protocol/sizing details and the `SessionStart` hook snippet for automatic per-session persona display).
 - `assets/profile.schema.json` — the profile JSON Schema; `assets/example-profile/` — one committed sample standalone output.
-- `tests/` — pytest suite (14 files) covering prompt/NSFW logic, ComfyUI node resolution and inventory parsing, template rendering + frontmatter round-tripping, terminal-image protocol detection, storage path policy, the mock-backend end-to-end pipeline, and Grok/Grok-CLI backend behavior.
+- `tests/` — pytest suite (15 files) covering prompt/NSFW logic, ComfyUI node resolution and inventory parsing, template rendering + frontmatter round-tripping, terminal-image protocol detection, display-flag toggling, storage path policy, the mock-backend end-to-end pipeline, and Grok/Grok-CLI backend behavior.
 
 See `README.md` for install and backend-config instructions.
 
@@ -48,3 +50,7 @@ python3 scripts/show_profile.py --root "$(pwd)"
 `--root` is required on every `write_profile.py` call (and meaningful, though defaulted to `.`, on `show_profile.py`) — it must be the target project's actual directory, never this skill's own installation directory; see the module docstrings for why.
 
 `PyYAML` and `Pillow` are optional at runtime (guarded with `try/except ImportError`); only `pytest` and `PyYAML` are needed to run the test suite in full (a couple of YAML-parsing assertions in `tests/test_render.py` skip gracefully if PyYAML isn't installed). `show_profile.py`'s Kitty/sixel paths additionally shell out to `kitten`/`icat`/`img2sixel` when present on `PATH`, but degrade gracefully (falling back to the raw protocol, or skipping the image entirely) when they aren't.
+
+<!-- profile-gen:start slug=persona -->
+@.claude/persona/persona.md
+<!-- profile-gen:end slug=persona -->

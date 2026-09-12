@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from profilegen import frontmatter, termimg  # noqa: E402
+from profilegen import discovery, frontmatter, termimg  # noqa: E402
 
 
 def _load_markdown_fields(markdown_path: Path) -> dict | None:
@@ -42,27 +42,6 @@ def _load_markdown_fields(markdown_path: Path) -> dict | None:
     except OSError:
         return None
     return frontmatter.extract_frontmatter(text)
-
-
-def _discover_personas(root: Path) -> list[dict]:
-    claude_md = root / "CLAUDE.md"
-    if not claude_md.is_file():
-        return []
-    try:
-        text = claude_md.read_text(encoding="utf-8")
-    except OSError:
-        return []
-
-    personas = []
-    for slug in frontmatter.find_marker_slugs(text):
-        ref = frontmatter.extract_ref_import(text, slug)
-        if ref:
-            fields = _load_markdown_fields(root / ref)
-        else:
-            fields = frontmatter.extract_embedded_block(text, slug)
-        if fields:
-            personas.append(fields)
-    return personas
 
 
 def _resolve_image_path(image: object, root: Path) -> Path | None:
@@ -110,8 +89,8 @@ def main() -> None:
             _display_one(fields, root, args)
         return
 
-    for fields in _discover_personas(root):
-        _display_one(fields, root, args)
+    for persona in discovery.discover_personas(root):
+        _display_one(persona.fields, root, args)
 
 
 if __name__ == "__main__":

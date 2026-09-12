@@ -41,6 +41,8 @@ iTerm2/WezTerm animate a GIF natively — no special handling needed, the raw by
 
 Both iTerm2 and Kitty sequences get wrapped in tmux's passthrough escape (`\ePtmux; ... \e\\`) whenever `$TMUX` is set. This requires `set -g allow-passthrough on` in the user's tmux config — tmux blocks passthrough by default and there's no way to detect that setting from here, so a silently-blocked image inside tmux most likely means that line is missing.
 
+Even with `allow-passthrough on`, plain tmux (not iTerm2's native tmux integration) can still only show an image for a moment: tmux's own screen model only understands text cells, not bitmaps, so it forwards the raw bytes once but has no notion of the image occupying space. Any redraw right after (a new prompt line appearing, the pane resizing) only knows about text and can clip or wipe the image, since tmux never actually "remembers" a picture was there. There is no config fix for this from profile-gen's side — the real fix is running the session under iTerm2's native tmux integration (`tmux -CC attach` instead of plain `tmux attach`), where iTerm2 renders each pane as a real iTerm2 window/tab instead of tmux drawing a shared text grid, so its own image protocol works directly without going through tmux's passthrough hack at all. That's a bigger workflow change (tmux windows become iTerm2 tabs, closing an iTerm2 window detaches rather than kills the session) — offer it, don't switch it on unasked.
+
 ## Wiring persistent display via a SessionStart hook
 
 `show_profile.py --profile ...` (SKILL.md step 10) only previews a persona for the rest of the session it was just generated in. To have a persona show automatically at the start of *every* future session in a project — the point of this feature, since the whole reason to want it is "I forget who I'm talking to" — add a `SessionStart` hook to the project's `.claude/settings.json`:
@@ -65,3 +67,15 @@ Both iTerm2 and Kitty sequences get wrapped in tmux's passthrough escape (`\ePtm
 Replace `<SKILL_DIR>` with this skill's actual install location (e.g. `~/.claude/skills/profile-gen` — the same directory this file lives under). `$CLAUDE_PROJECT_DIR` is the project-root environment variable Claude Code sets for hook commands; if a given Claude Code version doesn't set it, hardcode the project's absolute path instead of relying on a default.
 
 This hook needs no `--profile` argument — plain `--root` mode discovers whichever persona(s) are referenced from that project's `CLAUDE.md` on its own. Use the `update-config` skill to actually apply a settings.json change like this one, rather than hand-editing it.
+
+## Toggling display on/off after the fact
+
+`scripts/toggle_display.py` flips a persona's stored `display.image`/`display.name` in place, without regenerating anything else about it:
+
+```
+python3 scripts/toggle_display.py --root <PROJECT_ROOT> [--slug SLUG] [--image on|off] [--name on|off]
+```
+
+It uses the same `<PROJECT_ROOT>/CLAUDE.md` discovery as `show_profile.py` (via the shared `profilegen.discovery` module), so it finds whichever persona(s) are currently referenced there — pass `--slug` to target just one if more than one is discovered. It edits whichever file that persona's content actually lives in: the standalone `persona.md`/`profiles/<slug>/<slug>.md` for `claude-md-ref`, or that persona's own marker-delimited region inside `CLAUDE.md` itself for a fully-embedded (`claude-md`) persona — `frontmatter.block_span()` confines the edit so a different embedded persona's block is never touched. Prints one JSON object per persona changed: `{"slug", "markdown_path", "display": {...}}`, or `{"error": "..."}` (nonzero exit) if no persona was found.
+
+The `/display-profile` user command (`~/.claude/commands/display-profile.md`) wraps both scripts for interactive use: `/display-profile` previews, `/display-profile on|off` or `image on|off`/`name on|off` toggles then previews, and `/display-profile hook on|off` delegates the `SessionStart` hook setup above to the `update-config` skill.

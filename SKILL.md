@@ -295,5 +295,6 @@ they want the SessionStart hook set up for persistent display.
 - `references/backends.md` — ChatGPT/Grok config details.
 - `references/voices.md` — read only when picking a voice for the user.
 - `references/terminal-display.md` — how `show_profile.py` detects a terminal's inline-image
-  protocol, sizing/fallback behavior, and the `SessionStart` hook snippet for persistent
-  per-session display.
+  protocol, sizing/fallback behavior, the `SessionStart` hook snippet for persistent per-session
+  display, and `scripts/toggle_display.py` for flipping `display.image`/`display.name` after the
+  fact (also wrapped by the `/display-profile` user command, `~/.claude/commands/display-profile.md`).
