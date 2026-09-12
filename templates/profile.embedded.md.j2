@@ -1,0 +1,28 @@
+<!-- profile-gen:start slug={{ slug }} -->
+### {{ name }}
+
+![{{ name }}]({{ image }})
+
+```yaml
+schema_version: 1
+name: "{{ name }}"
+slug: "{{ slug }}"
+image: "{{ image }}"
+{% if voice %}
+voice: "{{ voice }}"
+{% endif %}
+nsfw: {{ nsfw }}
+generation:
+  backend: "{{ generation.backend }}"
+  model: "{{ generation.model }}"
+  prompt: "{{ generation.prompt }}"
+  negative_prompt: {{ generation.negative_prompt }}
+  seed: {{ generation.seed }}
+  gif_mode: {{ generation.gif_mode }}
+  created_at: "{{ generation.created_at }}"
+```
+
+{% if personality %}
+**Personality:** {{ personality }}
+{% endif %}
+<!-- profile-gen:end slug={{ slug }} -->

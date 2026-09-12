@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://profile-gen.local/profile.schema.json",
+  "title": "profile-gen profile",
+  "type": "object",
+  "required": ["schema_version", "name", "slug", "image", "nsfw", "generation"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "image": { "type": "string", "minLength": 1 },
+    "voice": { "type": ["string", "null"] },
+    "personality": { "type": ["string", "null"] },
+    "nsfw": { "type": "boolean" },
+    "generation": {
+      "type": "object",
+      "required": ["backend", "model", "prompt", "seed", "gif_mode", "created_at"],
+      "properties": {
+        "backend": { "type": "string", "enum": ["chatgpt", "grok", "grok-cli", "comfyui", "mock"] },
+        "model": { "type": "string" },
+        "prompt": { "type": "string" },
+        "negative_prompt": { "type": ["string", "null"] },
+        "seed": { "type": ["integer", "null"] },
+        "gif_mode": { "type": ["string", "null"], "enum": ["native", "synthetic", null] },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "additionalProperties": false
+}

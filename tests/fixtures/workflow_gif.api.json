@@ -1,0 +1,61 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "sd_xl_base.safetensors" },
+    "_meta": { "title": "Load Checkpoint" }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "placeholder positive", "clip": ["1", 1] },
+    "_meta": { "title": "ProfileGen Positive" }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "placeholder negative", "clip": ["1", 1] },
+    "_meta": { "title": "ProfileGen Negative" }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": 512, "height": 512, "batch_size": 16 },
+    "_meta": { "title": "ProfileGen Latent" }
+  },
+  "5": {
+    "class_type": "ADE_AnimateDiffLoaderGen1",
+    "inputs": { "model": ["1", 0], "model_name": "mm_sd_v15_v2.ckpt" },
+    "_meta": { "title": "AnimateDiff Loader" }
+  },
+  "6": {
+    "class_type": "KSamplerAdvanced",
+    "inputs": {
+      "noise_seed": 0,
+      "steps": 20,
+      "cfg": 7.0,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "start_at_step": 0,
+      "end_at_step": 20,
+      "add_noise": "enable",
+      "return_with_leftover_noise": "disable",
+      "model": ["5", 0],
+      "positive": ["2", 0],
+      "negative": ["3", 0],
+      "latent_image": ["4", 0]
+    },
+    "_meta": { "title": "KSampler (Advanced)" }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["6", 0], "vae": ["1", 2] },
+    "_meta": { "title": "VAE Decode" }
+  },
+  "8": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["7", 0],
+      "frame_rate": 8,
+      "filename_prefix": "profilegen_gif",
+      "format": "image/gif"
+    },
+    "_meta": { "title": "Video Combine" }
+  }
+}
