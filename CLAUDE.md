@@ -4,41 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Purpose
 
-This repository is empty and has no code, build tooling, or tests yet. It is intended to hold a
-Claude Code **skill** for generating agent profiles/personas. Based on the goal stated when this
-repo was initialized, the skill should let an agent generate a persona consisting of:
-
-- A profile image representing the agent (generated via ChatGPT or Grok if one isn't already
-  supplied)
-- A human-like name
-- An optional voice
-- An optional personality description
-
-The skill should support attaching the generated profile either directly into `CLAUDE.md` or into
-a separate external `.md` file, and that external file should optionally be checked into git or
-placed in a `.gitignore`'d location.
+This repository holds a Claude Code **skill** for generating agent personas: a profile image (via ChatGPT, Grok, Grok CLI, or a self-hosted ComfyUI server, with an optional animated GIF), a human-like name, an optional voice reference, and an optional personality description. The generated profile can be attached directly into `CLAUDE.md`, kept as a one-line auto-discoverable `@`-import pointing at a separate `.md` file, or written as a fully standalone file with no automatic reference at all — and that external file/its images can be tracked in git or kept in a `.gitignore`'d location, so a private or NSFW persona never has to touch a tracked file.
 
 ## Current state
 
-The skill is implemented. Entry point: `SKILL.md` (frontmatter + step-by-step instructions for
-Claude to follow when `/profile-gen` is invoked). Supporting code lives under `scripts/`:
+The skill is implemented. Entry point: `SKILL.md` (frontmatter + step-by-step instructions for Claude to follow when `/profile-gen` is invoked). Supporting code lives under `scripts/`:
 
-- `scripts/profilegen/` — the reusable package: `backends/` (ChatGPT/Grok/ComfyUI/mock, behind
-  the `ImageBackend` protocol in `backends/base.py`), `config.py` (config precedence), `prompt.py`
-  (NSFW-aware prompt building), `gif.py` (synthetic GIF assembly), `render.py` (mini
-  regex-based template engine — no Jinja dependency, see its module docstring for the supported
-  `{{ field }}` / `{% if field %}...{% endif %}` syntax), `storage.py` (path policy, slugify,
-  idempotent `.gitignore`/`CLAUDE.md` block edits), `http.py` (thin urllib wrapper).
-- `scripts/check_config.py`, `generate_image.py`, `make_gif.py`, `write_profile.py` — CLI entry
-  points, each printing one JSON object to stdout.
-- `templates/*.j2` — the standalone and CLAUDE.md-embedded markdown templates rendered by
-  `render.py`.
-- `references/*.md` — progressive-disclosure docs `SKILL.md` points Claude to on demand
-  (profile schema, prompting/NSFW recipe, ComfyUI workflow convention, backend config, voices).
-- `assets/profile.schema.json` — the profile JSON Schema; `assets/example-profile/` — one
-  committed sample standalone output.
-- `tests/` — pytest suite covering prompt/NSFW logic, ComfyUI node resolution, template
-  rendering, and all four output/assets path combinations.
+- `scripts/profilegen/` — the reusable package:
+  - `backends/` — `ImageBackend` protocol (`base.py`) plus `chatgpt.py`/`grok.py`/`grok_cli.py`/`comfyui.py`/`mock.py` implementations.
+  - `config.py` — backend config resolution (CLI flag > env var > project config > user config).
+  - `prompt.py` — NSFW-aware prompt building, shared across backends.
+  - `gif.py` — synthetic "living portrait" GIF assembly (pan/zoom fallback when no native animation backend is available).
+  - `comfyui_inventory.py` — parses a ComfyUI server's `/object_info` into checkpoints/LoRAs/samplers and native-animation-family detection.
+  - `render.py` — mini regex-based template engine for `templates/*.j2` (no Jinja dependency; see its module docstring for the supported `{{ field }}` / `{% if field %}...{% endif %}` syntax).
+  - `frontmatter.py` — the read-side counterpart to `render.py`: a small dependency-free parser for profile-gen's own generated markdown (frontmatter block, CLAUDE.md marker blocks, embedded fenced-YAML), used by `show_profile.py` to discover personas.
+  - `termimg.py` — terminal inline-image display: detects iTerm2/WezTerm, Kitty/Ghostty, or sixel (`img2sixel`) and renders a persona's picture sized to ~10% of terminal width, with a silent no-op when nothing is supported.
+  - `storage.py` — path policy, slugify, idempotent `.gitignore`/`CLAUDE.md` block edits.
+  - `http.py` — thin urllib wrapper used by the hosted backends.
+- CLI entry points, each printing one JSON object to stdout: `scripts/check_config.py`, `scripts/inspect_comfyui.py`, `scripts/generate_image.py`, `scripts/make_gif.py`, `scripts/write_profile.py`, `scripts/show_profile.py` (the last one is the exception — it writes terminal escape sequences/plain text, not JSON, since its whole point is a human-facing terminal preview).
+- `templates/*.j2` — the standalone and CLAUDE.md-embedded markdown templates rendered by `render.py`.
+- `references/*.md` — progressive-disclosure docs `SKILL.md` points Claude to on demand: `profile-schema.md`, `prompting.md`, `comfyui.md`, `comfyui-workflow-authoring.md`, `backends.md`, `voices.md`, `terminal-display.md` (protocol/sizing details and the `SessionStart` hook snippet for automatic per-session persona display).
+- `assets/profile.schema.json` — the profile JSON Schema; `assets/example-profile/` — one committed sample standalone output.
+- `tests/` — pytest suite (14 files) covering prompt/NSFW logic, ComfyUI node resolution and inventory parsing, template rendering + frontmatter round-tripping, terminal-image protocol detection, storage path policy, the mock-backend end-to-end pipeline, and Grok/Grok-CLI backend behavior.
 
 See `README.md` for install and backend-config instructions.
 
@@ -53,10 +40,11 @@ python3 -m pytest tests/
 Scripts are runnable directly without going through Claude, e.g.:
 
 ```bash
-python3 scripts/write_profile.py --plan-only --name "Ada Sterling" --output file --assets tracked
+python3 scripts/write_profile.py --plan-only --name "Ada Sterling" --root "$(pwd)" --output file --assets tracked
 python3 scripts/check_config.py --backend mock
+python3 scripts/show_profile.py --root "$(pwd)"
 ```
 
-`PyYAML` and `Pillow` are optional at runtime (guarded with `try/except ImportError`); only
-`pytest` and `PyYAML` are needed to run the test suite in full (a couple of YAML-parsing
-assertions in `tests/test_render.py` skip gracefully if PyYAML isn't installed).
+`--root` is required on every `write_profile.py` call (and meaningful, though defaulted to `.`, on `show_profile.py`) — it must be the target project's actual directory, never this skill's own installation directory; see the module docstrings for why.
+
+`PyYAML` and `Pillow` are optional at runtime (guarded with `try/except ImportError`); only `pytest` and `PyYAML` are needed to run the test suite in full (a couple of YAML-parsing assertions in `tests/test_render.py` skip gracefully if PyYAML isn't installed). `show_profile.py`'s Kitty/sixel paths additionally shell out to `kitten`/`icat`/`img2sixel` when present on `PATH`, but degrade gracefully (falling back to the raw protocol, or skipping the image entirely) when they aren't.
