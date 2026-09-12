@@ -81,9 +81,19 @@ final class HUDView: NSView {
         max(9, (avatar * 12 / 104).rounded())
     }
 
+    static func font(forAvatar avatar: CGFloat) -> NSFont {
+        NSFont.systemFont(ofSize: fontSize(forAvatar: avatar), weight: .semibold)
+    }
+
+    /// Wide enough for the orb *and* the name, so a long name under a small orb isn't clipped to
+    /// whatever fits above the disc.
     static func size(forAvatar avatar: CGFloat, name: String) -> NSSize {
-        NSSize(width: max(avatar, 90),
-               height: avatar + labelHeight(forAvatar: avatar, name: name))
+        var width = avatar
+        if !name.isEmpty {
+            let text = NSAttributedString(string: name, attributes: [.font: font(forAvatar: avatar)])
+            width = max(width, ceil(text.size().width) + 8)
+        }
+        return NSSize(width: width, height: avatar + labelHeight(forAvatar: avatar, name: name))
     }
 
     /// The avatar is an NSImageView rather than a manual `image.draw(in:)` specifically so an
@@ -139,7 +149,7 @@ final class HUDView: NSView {
         shadow.shadowBlurRadius = 3
         shadow.shadowOffset = NSSize(width: 0, height: -1)
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: Self.fontSize(forAvatar: avatar), weight: .semibold),
+            .font: Self.font(forAvatar: avatar),
             .foregroundColor: NSColor.white,
             .shadow: shadow,
         ]
@@ -381,8 +391,10 @@ final class Controller: NSObject {
             panel.setContentSize(view.frame.size)
         }
 
+        // The inset scales with the orb too: a 36 pt margin that looks right around a 104 pt orb
+        // leaves a 58 pt one floating in the middle of its pane's corner.
         let s = panel.frame.size
-        let m = opts.margin
+        let m = max(8, (opts.margin * avatar / max(opts.avatar, 1)).rounded())
         let x = opts.corner.hasSuffix("l") ? target.minX + m : target.maxX - s.width - m
         let y = opts.corner.hasPrefix("t") ? target.maxY - s.height - m : target.minY + m
         panel.setFrameOrigin(NSPoint(x: x, y: y))
