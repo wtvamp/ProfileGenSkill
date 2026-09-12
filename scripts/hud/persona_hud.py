@@ -33,9 +33,11 @@ WS_EX_TOOLWINDOW = 0x00000080
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-# Fraction of the pinned area's shorter side the orb occupies -- the same constant as
-# PersonaHUD.swift's avatarFraction, so the two platforms size identically for the same pane.
-AVATAR_FRACTION = 0.3
+# The orb is sized off the pinned area's width first (text runs horizontally, so that's what a
+# too-big orb covers), with the height term only biting on short, wide panes. Same constants as
+# PersonaHUD.swift, so the two platforms size identically for the same pane.
+AVATAR_WIDTH_FRACTION = 0.12
+AVATAR_HEIGHT_FRACTION = 0.3
 # Orb sizes are snapped to this step so dragging a pane edge doesn't re-decode the GIF on every
 # pixel of movement; frames are cached per snapped size.
 AVATAR_STEP = 4
@@ -278,9 +280,9 @@ class HUD:
         self.root.update_idletasks()
 
     def _avatar_size_for(self, width: float, height: float) -> int:
-        """Orb diameter for a pinned area of this size -- a fraction of its shorter side, clamped
-        to [--avatar-min, --avatar] so it neither vanishes nor outgrows the configured size."""
-        wanted = min(width, height) * AVATAR_FRACTION
+        """Orb diameter for a pinned area of this size, clamped to [--avatar-min, --avatar] so it
+        neither vanishes nor outgrows the configured size."""
+        wanted = min(width * AVATAR_WIDTH_FRACTION, height * AVATAR_HEIGHT_FRACTION)
         return int(round(min(self.args.avatar, max(self.args.avatar_min, wanted))))
 
     def _apply_click_through(self) -> None:
