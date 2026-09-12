@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
 """SessionStart hook: gather persona + recent-activity context for a self-introduction.
 
-Prints nothing about the model's identity itself -- it collects two things a SessionStart hook
-can see that the model can't derive from the conversation alone, and hands them back as
-`hookSpecificOutput.additionalContext` so Claude can introduce itself at the top of the session:
+It collects two things a SessionStart hook can see that the model can't derive from the
+conversation alone:
 
   1. The active persona (if any) discovered via `<ROOT>/CLAUDE.md`'s profile-gen marker blocks --
      name and the free-text `## Personality` section from its markdown file.
   2. A short recent-activity summary from `git log` in ROOT, so the intro reflects what was
      actually worked on lately instead of a generic greeting.
 
+These are handed back two ways:
+
+  - `hookSpecificOutput.additionalContext` -- primes Claude to open its first reply this session
+    with a fuller in-character introduction. Only appears once the user sends a message, since a
+    hook can't make the model speak on its own.
+  - `systemMessage` -- a short static one-liner the harness displays immediately at session
+    start, with no user input needed, so there's some visible greeting even before the user types
+    anything.
+
 Never errors out over a missing persona, a non-git ROOT, or any other lookup failure -- worst
-case it emits an empty/minimal additionalContext rather than blocking the session from starting.
+case it emits nothing rather than blocking the session from starting.
 """
 from __future__ import annotations
 
@@ -64,15 +72,9 @@ def _recent_activity(root: Path, count: int = 8) -> str | None:
     return result.stdout.strip() or None
 
 
-def build_context(root: Path) -> str | None:
-    personas = discovery.discover_personas(root)
-    activity = _recent_activity(root)
-
+def build_context(name: str | None, personality: str | None, activity: str | None) -> str | None:
     parts = []
-    if personas:
-        persona = personas[0]
-        name = persona.fields.get("name") or persona.slug
-        personality = _personality_section(persona.markdown_path)
+    if name:
         persona_bit = f"Your persona for this project is {name}."
         if personality:
             persona_bit += f" Personality: {personality}"
@@ -97,20 +99,47 @@ def build_context(root: Path) -> str | None:
     return "\n\n".join(parts)
 
 
+def build_system_message(name: str | None, activity: str | None) -> str | None:
+    if not name and not activity:
+        return None
+    greeting = f"👋 {name}" if name else "👋"
+    latest = activity.splitlines()[0].split(" ", 1)[1] if activity else None
+    if latest:
+        greeting += f" here. Lately: {latest}."
+    else:
+        greeting += " here."
+    return greeting
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="project root to inspect")
     args = parser.parse_args()
 
     root = Path(args.root)
-    context = build_context(root)
+    personas = discovery.discover_personas(root)
+    activity = _recent_activity(root)
+
+    name = None
+    personality = None
+    if personas:
+        persona = personas[0]
+        name = persona.fields.get("name") or persona.slug
+        personality = _personality_section(persona.markdown_path)
+
+    context = build_context(name, personality, activity)
+    system_message = build_system_message(name, activity)
+
+    output = {}
     if context:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }))
+        output["hookSpecificOutput"] = {
+            "hookEventName": "SessionStart",
+            "additionalContext": context,
+        }
+    if system_message:
+        output["systemMessage"] = system_message
+    if output:
+        print(json.dumps(output))
     return 0
 
 
