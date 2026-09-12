@@ -114,7 +114,12 @@ def owner_pid() -> int | None:
     try:
         walker = _parent_pids_windows if sys.platform.startswith("win") else _parent_pids_posix
         for pid, comm in walker(start):
-            if "claude" in comm.lower():
+            lowered = comm.lower()
+            # "bg-spare" is a pre-warmed slot in the background-agent daemon pool, not a session --
+            # it isn't tied to any one session's lifetime, so watching it would leave the overlay
+            # orphaned (or worse, killed out from under a still-running session it never belonged
+            # to). Skip past it and keep looking for the actual owning session further up.
+            if "claude" in lowered and "bg-spare" not in lowered:
                 return pid
     except Exception:
         return None
