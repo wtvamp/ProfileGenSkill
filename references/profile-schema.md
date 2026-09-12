@@ -22,7 +22,8 @@ plain language and shows one example of each render mode.
 | Field | Required | Type | Notes |
 |---|---|---|---|
 | `image` | yes | boolean | Show the profile picture inline in a supporting terminal (iTerm2/WezTerm, Kitty, or sixel via `img2sixel`) when `show_profile.py` runs. Set at generation time via `--show-image`/`--no-image`; `true` by default. |
-| `name` | yes | boolean | Print the persona's name in the terminal when `show_profile.py` runs. Set via `--show-name`/`--no-name`; `true` by default. |
+| `name` | yes | boolean | Print the persona's name when `show_profile.py` runs. Set via `--show-name`/`--no-name`; `true` by default. |
+| `autostart` | yes | boolean | Whether a `SessionStart` hook shows this persona *on its own*. Separate from `image`/`name`, which say what gets drawn once it is shown — `autostart: false` keeps a persona fully available via `/display-profile` while stopping it appearing unprompted. Only consulted under `show_profile.py --autostart-only` (what the hook passes); `true` by default. |
 
 Written by every profile-gen run from this point forward. A profile written before this field
 existed simply lacks it — `show_profile.py` treats a missing `display` (or a missing `image`/
@@ -61,6 +62,7 @@ nsfw: false
 display:
   image: true
   name: true
+  autostart: true
 generation:
   backend: "mock"
   model: "mock-v1"
@@ -134,6 +136,7 @@ nsfw: false
 display:
   image: true
   name: true
+  autostart: true
 generation:
   backend: "mock"
   model: "mock-v1"

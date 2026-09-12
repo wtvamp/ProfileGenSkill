@@ -16,7 +16,8 @@
       "type": "object",
       "properties": {
         "image": { "type": "boolean" },
-        "name": { "type": "boolean" }
+        "name": { "type": "boolean" },
+        "autostart": { "type": "boolean" }
       },
       "additionalProperties": false
     },

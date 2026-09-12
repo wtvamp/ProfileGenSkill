@@ -38,10 +38,12 @@ Two modes:
                  when the persona itself is meant to be shared/committed as-is.
 
 Fields file required keys: name, slug, image, nsfw, generation.
-Optional keys: voice, personality, display (an {"image": bool, "name": bool} object controlling
-whether show_profile.py shows this persona's picture/name in the terminal -- defaults to
-{"image": true, "name": true} when omitted, filled in here before rendering so every written
-profile always has an explicit value, even one predating this field).
+Optional keys: voice, personality, display (an {"image": bool, "name": bool, "autostart": bool}
+object -- image/name control whether show_profile.py shows this persona's picture/name at all,
+autostart whether a SessionStart hook shows it automatically, which is a separate question: a
+persona can be available via /display-profile without appearing on its own. All default to true
+when omitted, filled in here before rendering so every written profile has explicit values, even
+one predating a field).
 
 There is a single `image` field -- it holds whichever file is the profile's final picture, a
 static PNG or an animated GIF, never both. `generation.gif_mode` says which: null for a plain
@@ -95,6 +97,7 @@ def _write(args: argparse.Namespace) -> None:
     fields["display"] = {
         "image": display.get("image", True),
         "name": display.get("name", True),
+        "autostart": display.get("autostart", True),
     }
 
     try:

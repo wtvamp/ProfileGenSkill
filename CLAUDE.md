@@ -29,7 +29,7 @@ The skill is implemented. Entry point: `SKILL.md` (frontmatter + step-by-step in
 - `templates/*.j2` — the standalone and CLAUDE.md-embedded markdown templates rendered by `render.py`.
 - `references/*.md` — progressive-disclosure docs `SKILL.md` points Claude to on demand: `profile-schema.md`, `prompting.md`, `comfyui.md`, `comfyui-workflow-authoring.md`, `backends.md`, `voices.md`, `terminal-display.md` (protocol/sizing details and the `SessionStart` hook snippet for automatic per-session persona display).
 - `assets/profile.schema.json` — the profile JSON Schema; `assets/example-profile/` — one committed sample standalone output.
-- `tests/` — pytest suite (19 files) covering prompt/NSFW logic, ComfyUI node resolution and inventory parsing, template rendering + frontmatter round-tripping, terminal-image protocol detection, iTerm2 badge/background state + pane-tty resolution, HUD overlay build/launch/per-pane isolation, display-flag toggling, storage path policy, the mock-backend end-to-end pipeline, and Grok/Grok-CLI backend behavior.
+- `tests/` — pytest suite (19 files) covering prompt/NSFW logic, ComfyUI node resolution and inventory parsing, template rendering + frontmatter round-tripping, terminal-image protocol detection, iTerm2 badge/background state + pane-tty resolution, HUD overlay build/launch/per-pane isolation, display-flag toggling (including `autostart`, and appending a flag to a profile that predates it), storage path policy, the mock-backend end-to-end pipeline, and Grok/Grok-CLI backend behavior.
 
 See `README.md` for install and backend-config instructions.
 

@@ -71,7 +71,8 @@ def test_toggle_image_off_on_standalone_persona(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     out = json.loads(result.stdout)
-    assert out["display"] == {"image": False, "name": True}
+    assert out["display"]["image"] is False
+    assert out["display"]["name"] is True
 
     content = markdown_path.read_text(encoding="utf-8")
     assert "image: false" in content
@@ -88,7 +89,8 @@ def test_toggle_both_flags_at_once(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     out = json.loads(result.stdout)
-    assert out["display"] == {"image": False, "name": False}
+    assert out["display"]["image"] is False
+    assert out["display"]["name"] is False
     assert "image: false" in markdown_path.read_text(encoding="utf-8")
 
 

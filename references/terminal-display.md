@@ -34,7 +34,9 @@
 
 ## What gets shown, and when
 
-Each persona's `display.image`/`display.name` fields (see `references/profile-schema.md`) control this — set at generation time via `--show-image`/`--no-image`/`--show-name`/`--no-name`, defaulting to `true`/`true`. A profile written before this field existed is treated as `true`/`true` too.
+Each persona's `display.image`/`display.name` fields (see `references/profile-schema.md`) control this — set at generation time via `--show-image`/`--no-image`/`--show-name`/`--no-name`, defaulting to `true`/`true`. A profile written before these fields existed is treated as `true` too.
+
+`display.autostart` answers a different question: not *what* to draw, but whether this persona appears **on its own** at session start. It's consulted only under `--autostart-only`, which is what the `SessionStart` hook passes — so `autostart: false` keeps a persona fully displayable via `/display-profile` while stopping it appearing unprompted. Useful when several projects each have a persona and only some should announce themselves. Defaults to `true`, so personas written before the field keep appearing rather than silently stopping.
 
 Two invocation modes:
 

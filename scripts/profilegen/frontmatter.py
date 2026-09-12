@@ -119,8 +119,8 @@ def block_span(claude_md_text: str, slug: str) -> tuple[int, int] | None:
     return start_idx, end_idx + len(end_marker)
 
 
-_DISPLAY_IMAGE_RE = r"(display:\n  image: )(?:true|false)"
-_DISPLAY_NAME_RE = r"(display:\n  image: (?:true|false)\n  name: )(?:true|false)"
+_DISPLAY_BLOCK_RE = re.compile(r"^display:[ \t]*\n((?:[ \t]+\S[^\n]*\n)*)", re.MULTILINE)
+_DISPLAY_KEY_RE = re.compile(r"^([ \t]+)([A-Za-z0-9_]+):[ \t]*(.*)$")
 
 
 def set_display_flags(
@@ -128,12 +128,16 @@ def set_display_flags(
     *,
     image: bool | None = None,
     name: bool | None = None,
+    autostart: bool | None = None,
     region: tuple[int, int] | None = None,
 ) -> str:
-    """Flip ``display.image``/``display.name`` booleans in profile-gen's fixed
-    ``display:\\n  image: <bool>\\n  name: <bool>`` block (the exact, unvarying shape
-    `templates/*.j2` render -- see their module docstring). Only the flags actually passed
-    (not ``None``) are changed; passing neither is a no-op.
+    """Set ``display.image``/``display.name``/``display.autostart`` booleans in place. Only the
+    flags actually passed (not ``None``) are changed; passing none is a no-op.
+
+    Works on the ``display:`` block as a block rather than matching a fixed key order, so it
+    neither breaks when keys are added nor cares how they're ordered -- and a key the block
+    doesn't have yet (a profile written before ``autostart`` existed) is appended rather than
+    treated as an error.
 
     ``region`` confines the edit to that ``(start, end)`` character slice of ``text`` -- pass
     ``frontmatter.block_span(text, slug)`` when ``text`` is a CLAUDE.md that may hold more than
@@ -142,21 +146,42 @@ def set_display_flags(
 
     Raises ``ValueError`` if no ``display:`` block is found within the target region.
     """
+    updates = {
+        key: value
+        for key, value in (("image", image), ("name", name), ("autostart", autostart))
+        if value is not None
+    }
+    if not updates:
+        return text
+
     start, end = region if region is not None else (0, len(text))
     segment = text[start:end]
 
-    if image is not None:
-        segment, count = re.subn(
-            _DISPLAY_IMAGE_RE, r"\g<1>" + ("true" if image else "false"), segment, count=1
-        )
-        if count == 0:
-            raise ValueError("no display.image field found in the target region")
+    match = _DISPLAY_BLOCK_RE.search(segment)
+    if match is None:
+        raise ValueError("no display: block found in the target region")
 
-    if name is not None:
-        segment, count = re.subn(
-            _DISPLAY_NAME_RE, r"\g<1>" + ("true" if name else "false"), segment, count=1
-        )
-        if count == 0:
-            raise ValueError("no display.name field found in the target region")
+    body_lines = match.group(1).splitlines(keepends=True)
+    indent = "  "
+    rewritten: list[str] = []
+    seen: set[str] = set()
 
-    return text[:start] + segment + text[end:]
+    for line in body_lines:
+        key_match = _DISPLAY_KEY_RE.match(line.rstrip("\n"))
+        if key_match:
+            indent = key_match.group(1)
+        if key_match and key_match.group(2) in updates:
+            key = key_match.group(2)
+            seen.add(key)
+            rewritten.append(f"{indent}{key}: {'true' if updates[key] else 'false'}\n")
+        else:
+            rewritten.append(line)
+
+    for key, value in updates.items():
+        if key not in seen:
+            rewritten.append(f"{indent}{key}: {'true' if value else 'false'}\n")
+
+    new_segment = (
+        segment[: match.start(1)] + "".join(rewritten) + segment[match.end(1) :]
+    )
+    return text[:start] + new_segment + text[end:]

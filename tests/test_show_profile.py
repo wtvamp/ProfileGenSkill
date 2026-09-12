@@ -321,3 +321,74 @@ def test_show_profile_explicit_profile_flag_skips_claude_md(tmp_path, force_iter
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Ada Sterling" in result.stdout
+
+
+def test_autostart_only_skips_persona_with_autostart_off(tmp_path, force_iterm_env):
+    _write_profile(
+        tmp_path,
+        "Quiet Starter",
+        "quiet-starter",
+        "claude-md-ref",
+        "tracked",
+        display={"image": True, "name": True, "autostart": False},
+    )
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline", "--autostart-only"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == ""  # nothing displayed, nothing reported
+
+
+def test_without_autostart_only_the_same_persona_still_displays(tmp_path, force_iterm_env):
+    # autostart governs only automatic display -- asking for it explicitly must still work
+    _write_profile(
+        tmp_path,
+        "Quiet Starter",
+        "quiet-starter",
+        "claude-md-ref",
+        "tracked",
+        display={"image": True, "name": True, "autostart": False},
+    )
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Quiet Starter" in result.stdout
+
+
+def test_autostart_only_shows_persona_with_autostart_on(tmp_path, force_iterm_env):
+    _write_profile(
+        tmp_path,
+        "Eager Starter",
+        "eager-starter",
+        "claude-md-ref",
+        "tracked",
+        display={"image": False, "name": True, "autostart": True},
+    )
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline", "--autostart-only"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Eager Starter" in result.stdout
+
+
+def test_autostart_defaults_to_on_for_a_profile_predating_the_field(tmp_path, force_iterm_env):
+    # an older persona has no autostart key; it must keep appearing at startup, not silently stop
+    _write_profile(tmp_path, "Legacy Persona", "legacy-persona", "claude-md-ref", "tracked")
+    persona = tmp_path / "profiles" / "legacy-persona" / "legacy-persona.md"
+    persona.write_text(
+        persona.read_text(encoding="utf-8").replace("  autostart: true\n", ""), encoding="utf-8"
+    )
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "inline", "--autostart-only"],
+        cwd=REPO_ROOT,
+        env=force_iterm_env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Legacy Persona" in result.stdout
