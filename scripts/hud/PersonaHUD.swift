@@ -303,15 +303,20 @@ final class Controller: NSObject {
     /// terminal's text area does not.
     static let titleBarHeight: CGFloat = 28
 
-    /// Fraction of the pinned area's shorter side the orb occupies. At 0.3 a half-height pane in a
-    /// full-screen terminal lands right around the 104 pt default, so roomy layouts look the same
-    /// as before, and a third-of-the-screen sidebar pane gets an orb that no longer covers most of
-    /// its text. Clamped to `[avatarMin, avatar]` so it never vanishes and never outgrows the
-    /// configured size.
-    static let avatarFraction: CGFloat = 0.3
+    /// The orb is sized off the pinned area's *width* first: what a too-big orb costs is the text
+    /// it covers, and text runs horizontally, so a third-width pane wants a third-width orb even
+    /// when it's as tall as the window. (Sizing off the shorter side was tried first and never
+    /// bit -- a 480 pt-wide, 540 pt-tall pane still capped out at the maximum.) At 12% a
+    /// full-width pane in a ~1500 pt window lands right at the 104 pt default, a third-width
+    /// pane gets ~58 pt, and a sidebar drops to the floor. The height term only matters for
+    /// short, wide panes (a bottom split a dozen rows tall), where the orb plus label would
+    /// otherwise eat most of the pane. Clamped to `[avatarMin, avatar]`.
+    static let avatarWidthFraction: CGFloat = 0.12
+    static let avatarHeightFraction: CGFloat = 0.3
 
     func avatarSize(for target: CGRect) -> CGFloat {
-        let wanted = min(target.width, target.height) * Self.avatarFraction
+        let wanted = min(target.width * Self.avatarWidthFraction,
+                         target.height * Self.avatarHeightFraction)
         return min(opts.avatar, max(opts.avatarMin, wanted)).rounded()
     }
 
