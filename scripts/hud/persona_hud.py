@@ -54,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--owner", default="", help="comma-separated terminal process names")
     parser.add_argument("--tmux-pane", default="")
     parser.add_argument("--tmux-bin", default="")
+    parser.add_argument("--watch-pid", type=int, default=0)
     return parser.parse_args()
 
 
@@ -97,19 +98,65 @@ def _foreground_terminal_rect(owners: tuple[str, ...]) -> tuple[int, int, int, i
     return rect.left, rect.top, rect.right, rect.bottom
 
 
-def _tmux_window_visible(pane: str, tmux_bin: str) -> bool:
-    """Whether this persona's tmux window is the one on screen -- tmux multiplexes many windows
-    into one terminal window, so the terminal alone can't answer this. True when not under tmux."""
-    if not pane or not tmux_bin:
+def _pid_alive(pid: int) -> bool:
+    """Whether the session that owns this overlay is still running.
+
+    Deliberately not `os.kill(pid, 0)`: on Windows os.kill calls TerminateProcess for any signal,
+    so the POSIX "signal 0 just tests existence" idiom would *kill* the process being checked.
+    """
+    if pid <= 0:
         return True
+    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _tmux_pane_geometry(pane: str, tmux_bin: str):
+    """Where this persona's pane sits as fractions of the terminal window, plus whether it's on
+    screen: ``(fx0, fy0, fx1, fy1, visible)``, or None when not running under tmux.
+
+    tmux multiplexes many *windows* into one terminal window (so the terminal being frontmost says
+    nothing about whether this persona's window is displayed), and a window can hold several
+    *panes* each running its own agent -- pinning every overlay to the terminal window's corner
+    would stack them on top of each other. Positioning each overlay over its own pane keeps them
+    apart and makes "which agent is in which pane" obvious.
+    """
+    if not pane or not tmux_bin:
+        return None
+    fmt = (
+        "#{pane_left},#{pane_top},#{pane_right},#{pane_bottom},"
+        "#{window_width},#{window_height},#{window_active},#{session_attached}"
+    )
     try:
         out = subprocess.run(
-            [tmux_bin, "display-message", "-pt", pane, "#{window_active}#{session_attached}"],
+            [tmux_bin, "display-message", "-pt", pane, fmt],
             capture_output=True, text=True, timeout=5,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
-        return False
-    return out == "11"
+        return (0.0, 0.0, 1.0, 1.0, False)
+
+    try:
+        left, top, right, bottom, cols, rows, active, attached = [int(v) for v in out.split(",")]
+    except ValueError:
+        return (0.0, 0.0, 1.0, 1.0, False)
+    if cols <= 0 or rows <= 0:
+        return (0.0, 0.0, 1.0, 1.0, False)
+
+    # pane_right/pane_bottom are inclusive cell indices, hence the +1 for the far edges.
+    return (
+        left / cols,
+        top / rows,
+        (right + 1) / cols,
+        (bottom + 1) / rows,
+        active == 1 and attached == 1,
+    )
 
 
 class AvatarFrames:
@@ -211,22 +258,36 @@ class HUD:
         self.root.after(delay, self._animate)
 
     def _tick(self) -> None:
+        if not _pid_alive(self.args.watch_pid):
+            self.root.destroy()
+            return
         rect = _foreground_terminal_rect(self.owners)
-        visible = rect is not None and _tmux_window_visible(
-            self.args.tmux_pane, self.args.tmux_bin
-        )
-        if not visible:
+        if rect is None:
             self.root.withdraw()
-        else:
-            left, top, right, bottom = rect
-            w = self.root.winfo_width()
-            h = self.root.winfo_height()
-            m = self.args.margin
-            x = left + m if self.args.corner.endswith("l") else right - w - m
-            y = top + m if self.args.corner.startswith("t") else bottom - h - m
-            self.root.geometry(f"+{int(x)}+{int(y)}")
-            self.root.deiconify()
-            self.root.attributes("-topmost", True)
+            self.root.after(250, self._tick)
+            return
+
+        left, top, right, bottom = rect
+        # Default target is the whole terminal window; under tmux, narrow it to this pane.
+        pane = _tmux_pane_geometry(self.args.tmux_pane, self.args.tmux_bin)
+        if pane is not None:
+            fx0, fy0, fx1, fy1, visible = pane
+            if not visible:
+                self.root.withdraw()
+                self.root.after(250, self._tick)
+                return
+            width, height = right - left, bottom - top
+            left, right = left + fx0 * width, left + fx1 * width
+            top, bottom = top + fy0 * height, top + fy1 * height
+
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        m = self.args.margin
+        x = left + m if self.args.corner.endswith("l") else right - w - m
+        y = top + m if self.args.corner.startswith("t") else bottom - h - m
+        self.root.geometry(f"+{int(x)}+{int(y)}")
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)
         self.root.after(250, self._tick)
 
     def run(self) -> None:

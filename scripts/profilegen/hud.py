@@ -31,6 +31,96 @@ DEFAULT_CORNER = "tr"
 DEFAULT_MARGIN = 36
 
 
+def _parent_pids_posix(pid: int) -> "list[tuple[int, str]]":
+    chain = []
+    for _ in range(12):
+        if pid <= 1:
+            break
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            break
+        parts = out.split(None, 1)
+        if len(parts) != 2:
+            break
+        chain.append((pid, parts[1]))
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            break
+    return chain
+
+
+def _parent_pids_windows(pid: int) -> "list[tuple[int, str]]":
+    """Walk the process tree with CreateToolhelp32Snapshot, so no helper process is needed."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_char * 260),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == -1:
+        return []
+    parents: dict[int, tuple[int, str]] = {}
+    try:
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        ok = kernel32.Process32First(snapshot, ctypes.byref(entry))
+        while ok:
+            parents[entry.th32ProcessID] = (
+                entry.th32ParentProcessID,
+                entry.szExeFile.decode(errors="replace"),
+            )
+            ok = kernel32.Process32Next(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    chain = []
+    for _ in range(12):
+        info = parents.get(pid)
+        if info is None:
+            break
+        chain.append((pid, info[1]))
+        pid = info[0]
+        if pid <= 0:
+            break
+    return chain
+
+
+def owner_pid() -> int | None:
+    """PID of the Claude Code process this overlay belongs to.
+
+    The overlay is deliberately detached so it outlives the command that launched it -- but that
+    also means nothing would ever clean it up, and it would sit on screen long after the session
+    it represents had exited. Handing the overlay this pid lets it exit on its own when the session
+    does, with no hook or shutdown handshake to configure. Anything the shell tool runs is a
+    descendant of Claude Code, so walking up the process tree finds it.
+    """
+    try:
+        start = os.getppid()
+    except OSError:
+        return None
+    try:
+        walker = _parent_pids_windows if sys.platform.startswith("win") else _parent_pids_posix
+        for pid, comm in walker(start):
+            if "claude" in comm.lower():
+                return pid
+    except Exception:
+        return None
+    return None
+
+
 def _pane_key() -> str:
     """Identifies the tmux pane this persona belongs to.
 
@@ -158,6 +248,11 @@ def launch(
         tmux_bin = shutil.which("tmux")
         if tmux_bin:
             args += ["--tmux-pane", pane, "--tmux-bin", tmux_bin]
+
+    # so the overlay exits by itself when the session it belongs to does
+    watch = owner_pid()
+    if watch:
+        args += ["--watch-pid", str(watch)]
 
     # Detach so the overlay outlives the process that started it. Windows has no
     # start_new_session; DETACHED_PROCESS|CREATE_NO_WINDOW is the equivalent, and also keeps a

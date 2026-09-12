@@ -204,3 +204,61 @@ def test_ensure_built_returns_none_on_compile_failure(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hud.subprocess, "run", failing)
     assert hud.ensure_built() is None
+
+
+def test_owner_pid_finds_claude_in_the_process_tree(monkeypatch):
+    # anything the shell tool runs is a descendant of Claude Code, so walking up finds it
+    monkeypatch.setattr(hud.os, "getppid", lambda: 100)
+    monkeypatch.setattr(
+        hud,
+        "_parent_pids_posix",
+        lambda pid: [(100, "/bin/zsh"), (200, "claude"), (300, "-zsh"), (400, "tmux")],
+    )
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
+    assert hud.owner_pid() == 200
+
+
+def test_owner_pid_none_when_claude_not_in_tree(monkeypatch):
+    monkeypatch.setattr(hud.os, "getppid", lambda: 100)
+    monkeypatch.setattr(hud, "_parent_pids_posix", lambda pid: [(100, "zsh"), (200, "tmux")])
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
+    assert hud.owner_pid() is None
+
+
+def test_launch_passes_watch_pid(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "owner_pid", lambda: 69215)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    args = captured["args"]
+    assert "--watch-pid" in args and "69215" in args
+
+
+def test_launch_omits_watch_pid_when_owner_unknown(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "owner_pid", lambda: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    assert "--watch-pid" not in captured["args"]
