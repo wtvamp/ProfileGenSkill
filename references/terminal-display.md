@@ -100,6 +100,34 @@ Replace `<SKILL_DIR>` with this skill's actual install location (e.g. `~/.claude
 
 This hook needs no `--profile` argument — plain `--root` mode discovers whichever persona(s) are referenced from that project's `CLAUDE.md` on its own. Use the `update-config` skill to actually apply a settings.json change like this one, rather than hand-editing it.
 
+## A spoken self-introduction via the same hook
+
+`scripts/session_intro.py` is a separate `SessionStart` hook script that makes Claude actually introduce itself at the top of a session — name, personality, and a one- or two-line summary of what's been worked on lately, drawn from `git log` in the project. It's independent of the `hud`/`inline`/`state` display above (it prints text/context, not an image), so the two can be wired in together or separately.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 <SKILL_DIR>/scripts/session_intro.py --root \"$CLAUDE_PROJECT_DIR\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Same `<SKILL_DIR>` substitution as above. It emits two things, for two different reasons a `SessionStart` hook can't just make Claude talk before the user has said anything:
+
+- `hookSpecificOutput.additionalContext` — primes Claude to open its *first reply* of the session with an in-character introduction. Only visible once the user actually sends a message.
+- `systemMessage` — a short static one-liner (persona name + the latest commit subject) the harness displays immediately at session start, with no user input needed, so there's some visible greeting even before anyone types.
+
+It discovers the persona the same way `show_profile.py --root` does (via `CLAUDE.md`'s profile-gen marker blocks), so no argument beyond `--root` is needed, and it degrades to emitting nothing (never an error) if there's no persona or the project isn't a git repo.
+
 ## Toggling display on/off after the fact
 
 `scripts/toggle_display.py` flips a persona's stored `display.image`/`display.name` in place, without regenerating anything else about it:

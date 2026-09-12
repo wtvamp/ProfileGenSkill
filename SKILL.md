@@ -274,6 +274,12 @@ into the project's `.claude/settings.json`; walk them through `references/termin
 hook snippet (or hand it to the `update-config` skill) rather than doing it silently, since it
 edits a config file outside this skill's own output paths.
 
+While you're offering that, also offer the companion `session_intro.py` hook from the same
+reference file — it makes Claude actually introduce itself (name, personality, a line on recent
+`git log` activity) at the start of a session, instead of just showing a picture. Offer both
+together rather than making the user remember to ask for the second one separately; if they want
+either, wire it in now rather than telling them to do it themselves later.
+
 ## 11. Report results
 
 Tell the user: the name, where the persona's markdown landed, where the image/GIF landed, whether
@@ -283,7 +289,7 @@ place rather than duplicating). For `claude-md-ref` specifically, make clear tha
 reference was added to CLAUDE.md and the persona's actual content lives at `markdown_path`
 (private/gitignored if that's what `--assets` was set to). Also mention whether the terminal
 preview actually drew an image (vs. silently skipping for lack of protocol support) and whether
-they want the SessionStart hook set up for persistent display.
+they want the SessionStart hooks set up for persistent display and/or the spoken self-intro.
 
 ## Reference files
 
