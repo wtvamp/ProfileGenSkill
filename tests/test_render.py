@@ -21,6 +21,7 @@ FULL_FIELDS = {
     "voice": "af_jessica",
     "personality": "Warm, precise, and a little wry.",
     "nsfw": False,
+    "display": {"image": True, "name": True},
     "generation": {
         "backend": "mock",
         "model": "mock-v1",
@@ -40,6 +41,7 @@ MINIMAL_FIELDS = {
     "voice": None,
     "personality": None,
     "nsfw": False,
+    "display": {"image": True, "name": False},
     "generation": {
         "backend": "mock",
         "model": "mock-v1",
@@ -94,6 +96,19 @@ def test_embedded_optional_fields_absent_when_unset():
     assert "**Personality:**" not in out
 
 
+def test_standalone_display_field_rendered():
+    out = render.render_standalone(FULL_FIELDS)
+    assert "display:" in out
+    assert "image: true" in out
+    assert "name: true" in out
+
+
+def test_standalone_display_field_reflects_per_flag_off():
+    out = render.render_standalone(MINIMAL_FIELDS)
+    assert "image: true" in out
+    assert "name: false" in out
+
+
 def test_single_image_field_holds_gif_when_animated():
     out = render.render_standalone(FULL_FIELDS)
     assert "ada-sterling.gif" in out
@@ -117,6 +132,8 @@ def test_standalone_frontmatter_is_valid_yaml():
     assert parsed["nsfw"] is False
     assert parsed["generation"]["backend"] == "mock"
     assert parsed["generation"]["seed"] == 42
+    assert parsed["display"]["image"] is True
+    assert parsed["display"]["name"] is True
 
 
 @pytest.mark.skipif(yaml is None, reason="PyYAML not installed")

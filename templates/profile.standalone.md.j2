@@ -7,6 +7,9 @@ image: "{{ image }}"
 voice: "{{ voice }}"
 {% endif %}
 nsfw: {{ nsfw }}
+display:
+  image: {{ display.image }}
+  name: {{ display.name }}
 generation:
   backend: "{{ generation.backend }}"
   model: "{{ generation.model }}"

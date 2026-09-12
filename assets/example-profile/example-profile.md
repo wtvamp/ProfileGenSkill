@@ -8,6 +8,9 @@ image: "assets/example-profile/example-profile.png"
 voice: "af_jessica"
 
 nsfw: false
+display:
+  image: true
+  name: true
 generation:
   backend: "mock"
   model: "mock-v1"

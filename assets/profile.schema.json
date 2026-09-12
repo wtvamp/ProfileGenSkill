@@ -12,6 +12,14 @@
     "voice": { "type": ["string", "null"] },
     "personality": { "type": ["string", "null"] },
     "nsfw": { "type": "boolean" },
+    "display": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "boolean" },
+        "name": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "generation": {
       "type": "object",
       "required": ["backend", "model", "prompt", "seed", "gif_mode", "created_at"],

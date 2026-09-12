@@ -38,7 +38,10 @@ Two modes:
                  when the persona itself is meant to be shared/committed as-is.
 
 Fields file required keys: name, slug, image, nsfw, generation.
-Optional keys: voice, personality.
+Optional keys: voice, personality, display (an {"image": bool, "name": bool} object controlling
+whether show_profile.py shows this persona's picture/name in the terminal -- defaults to
+{"image": true, "name": true} when omitted, filled in here before rendering so every written
+profile always has an explicit value, even one predating this field).
 
 There is a single `image` field -- it holds whichever file is the profile's final picture, a
 static PNG or an animated GIF, never both. `generation.gif_mode` says which: null for a plain
@@ -88,6 +91,11 @@ def _write(args: argparse.Namespace) -> None:
         return
 
     slug = fields.get("slug") or storage.slugify(fields["name"])
+    display = fields.get("display") if isinstance(fields.get("display"), dict) else {}
+    fields["display"] = {
+        "image": display.get("image", True),
+        "name": display.get("name", True),
+    }
 
     try:
         if args.output == "claude-md":

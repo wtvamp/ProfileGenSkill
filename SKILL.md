@@ -1,7 +1,7 @@
 ---
 name: profile-gen
 description: Generate a persona for an AI agent — a profile image (with optional animated GIF), a human-like name, an optional voice reference, and an optional personality description — and record it as a standalone markdown profile with a one-line auto-discoverable reference kept in CLAUDE.md (or, optionally, fully inlined into CLAUDE.md). Private/NSFW personas can be kept entirely out of git while still being auto-loaded via that reference. Supports ChatGPT/Grok (with an API key), the Grok CLI (no API key — uses a Grok/X subscription via `grok login`), or a self-hosted ComfyUI server (no account needed — the skill can author a workflow for you, LoRA picks included, if you don't already have one).
-argument-hint: "[description hints] [--backend chatgpt|grok|grok-cli|comfyui] [--nsfw] [--gif] [--voice NAME] [--output claude-md-ref|claude-md|file] [--assets tracked|gitignored] [--name NAME]"
+argument-hint: "[description hints] [--backend chatgpt|grok|grok-cli|comfyui] [--nsfw] [--gif] [--voice NAME] [--output claude-md-ref|claude-md|file] [--assets tracked|gitignored] [--name NAME] [--no-image] [--no-name]"
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion, Agent
 ---
 
@@ -33,8 +33,13 @@ Two directories matter here and **they are almost always different**:
 
 Parse whatever the user typed after `/profile-gen` for: free-text description hints, `--backend
 chatgpt|grok|grok-cli|comfyui`, `--nsfw`, `--gif`, `--voice NAME`,
-`--output claude-md-ref|claude-md|file`, `--assets tracked|gitignored`, `--name NAME`. Anything
-not recognized as a flag is a description hint.
+`--output claude-md-ref|claude-md|file`, `--assets tracked|gitignored`, `--name NAME`,
+`--no-image`, `--no-name`. Anything not recognized as a flag is a description hint.
+
+`--no-image`/`--no-name` control this persona's stored `display.image`/`display.name`
+preference (both default `true` — the picture shows and the name prints whenever
+`scripts/show_profile.py` runs for it; see `references/terminal-display.md`). These don't need
+their own `AskUserQuestion` round — assume both `true` unless the flag was given.
 
 ## 2. Gather missing inputs (one question round)
 
@@ -233,10 +238,12 @@ subject). Only fall back to the step 7 PNG path as `image` if this step was skip
 ## 9. Write the profile
 
 Assemble a fields JSON object per `references/profile-schema.md` (name, slug, image, nsfw,
-generation, plus voice/personality if set) to a temp file. Set `image` to the GIF path from step
-8 if one was generated, otherwise the PNG path from step 7 — never both, there's no separate
-animated-image field. Set `generation.gif_mode` to the `mode` step 8 reported, or `null` if step
-8 was skipped. Then:
+display, generation, plus voice/personality if set) to a temp file. Set `image` to the GIF path
+from step 8 if one was generated, otherwise the PNG path from step 7 — never both, there's no
+separate animated-image field. Set `generation.gif_mode` to the `mode` step 8 reported, or `null`
+if step 8 was skipped. Set `display.image`/`display.name` from step 1's `--no-image`/`--no-name`
+parse (`true` unless the flag was given — `write_profile.py` also fills in `true` for either key
+if you omit `display` entirely, so it's safe to leave out when both are on). Then:
 
 ```
 python3 scripts/write_profile.py --fields-file <fields.json> --root <PROJECT_ROOT> \
@@ -248,14 +255,35 @@ gitignored`, and for `--output claude-md-ref` also writes/replaces the one-line 
 in `<PROJECT_ROOT>/CLAUDE.md`. Prints `{"markdown_path", "image_path", "gitignore_updated",
 "claude_md_updated", "claude_md_path"}` (`claude_md_path` is `null` for `--output file`).
 
-## 10. Report results
+## 10. Preview in the terminal
+
+If `display.image` or `display.name` ended up `true`, show the persona right away:
+
+```
+python3 scripts/show_profile.py --profile <markdown_path> --root <PROJECT_ROOT>
+```
+
+This is a silent no-op in a terminal with no supported inline-image protocol (or if both display
+fields are off) — see `references/terminal-display.md` for which terminals it actually draws an
+image in and how the sizing/fallback works. Don't treat "nothing appeared" as an error.
+
+This one call only previews the persona for the rest of *this* session. If the user wants it to
+show automatically at the start of every future session in this project too (the common reason to
+want this feature at all — "I forget who I'm talking to"), that needs a `SessionStart` hook wired
+into the project's `.claude/settings.json`; walk them through `references/terminal-display.md`'s
+hook snippet (or hand it to the `update-config` skill) rather than doing it silently, since it
+edits a config file outside this skill's own output paths.
+
+## 11. Report results
 
 Tell the user: the name, where the persona's markdown landed, where the image/GIF landed, whether
 `.gitignore` was touched, and — for `claude-md-ref`/`claude-md` — whether an existing CLAUDE.md
 block was replaced vs. newly appended (re-running with the same name/slug always replaces in
 place rather than duplicating). For `claude-md-ref` specifically, make clear that only a one-line
 reference was added to CLAUDE.md and the persona's actual content lives at `markdown_path`
-(private/gitignored if that's what `--assets` was set to).
+(private/gitignored if that's what `--assets` was set to). Also mention whether the terminal
+preview actually drew an image (vs. silently skipping for lack of protocol support) and whether
+they want the SessionStart hook set up for persistent display.
 
 ## Reference files
 
@@ -266,3 +294,6 @@ reference was added to CLAUDE.md and the persona's actual content lives at `mark
   4a; read it yourself too if you end up authoring/fixing a workflow directly.
 - `references/backends.md` — ChatGPT/Grok config details.
 - `references/voices.md` — read only when picking a voice for the user.
+- `references/terminal-display.md` — how `show_profile.py` detects a terminal's inline-image
+  protocol, sizing/fallback behavior, and the `SessionStart` hook snippet for persistent
+  per-session display.

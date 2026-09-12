@@ -14,7 +14,20 @@ plain language and shows one example of each render mode.
 | `voice` | no | string or `null` | Opaque voice-name reference (e.g. a Kokoro TTS voice like `af_jessica`). Metadata only — no audio is synthesized. See `references/voices.md`. |
 | `personality` | no | string or `null` | Free-form prose description of the persona's personality/register. |
 | `nsfw` | yes | boolean | Whether this profile was generated in NSFW mode. Threads through to `generation.prompt`/`generation.negative_prompt` and the backend call — see `references/prompting.md`. |
+| `display` | yes | object | Whether `scripts/show_profile.py` shows this persona's picture/name inline in the terminal. See below. |
 | `generation` | yes | object | Provenance of how the image was produced. See below. |
+
+### `display` object
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `image` | yes | boolean | Show the profile picture inline in a supporting terminal (iTerm2/WezTerm, Kitty, or sixel via `img2sixel`) when `show_profile.py` runs. Set at generation time via `--show-image`/`--no-image`; `true` by default. |
+| `name` | yes | boolean | Print the persona's name in the terminal when `show_profile.py` runs. Set via `--show-name`/`--no-name`; `true` by default. |
+
+Written by every profile-gen run from this point forward. A profile written before this field
+existed simply lacks it — `show_profile.py` treats a missing `display` (or a missing `image`/
+`name` key within it) as `true`, so older profiles keep behaving as if both were on. See
+`references/terminal-display.md` for how `show_profile.py` uses this.
 
 ### `generation` object
 
@@ -45,6 +58,9 @@ slug: "ada-sterling"
 image: "assets/example-profile/example-profile.png"
 voice: "af_jessica"
 nsfw: false
+display:
+  image: true
+  name: true
 generation:
   backend: "mock"
   model: "mock-v1"
@@ -115,6 +131,9 @@ slug: "ada-sterling"
 image: "assets/example-profile/example-profile.png"
 voice: "af_jessica"
 nsfw: false
+display:
+  image: true
+  name: true
 generation:
   backend: "mock"
   model: "mock-v1"

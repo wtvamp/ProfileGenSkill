@@ -65,6 +65,10 @@ See `references/comfyui.md` for the node-title convention the (auto- or hand-bui
 follows, and pass `--workflow`/`--gif-workflow` to `generate_image.py`/`check_config.py`/
 `make_gif.py` to point at a specific file without touching `COMFYUI_WORKFLOW`/`COMFYUI_GIF_WORKFLOW`.
 
+## Terminal display
+
+`scripts/show_profile.py` shows a persona's picture and/or name inline in the terminal — iTerm2/WezTerm, Kitty/Ghostty, and sixel (via `img2sixel`) are all supported, sized to roughly 10% of the terminal's width, with a silent no-op in a terminal that supports none of those. `--no-image`/`--no-name` at generation time turn either off per-persona (both default on). See `references/terminal-display.md` for protocol/sizing details and a `SessionStart` hook snippet that shows a project's persona automatically at the start of every future session, not just right after generating it.
+
 ## NSFW
 
 `--nsfw` is a pure pass-through flag: it's forwarded unmodified to whichever backend you picked
