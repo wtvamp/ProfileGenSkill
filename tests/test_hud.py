@@ -198,6 +198,7 @@ def test_launch_passes_tmux_pane_and_writes_pid(monkeypatch, tmp_path):
     monkeypatch.setattr(hud, "ensure_built", lambda: binary)
     monkeypatch.setenv("TMUX_PANE", "%15")
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
 
     captured = {}
 
@@ -338,6 +339,7 @@ def test_launch_passes_watch_pid(monkeypatch, tmp_path):
     binary.touch()
     monkeypatch.setattr(hud, "ensure_built", lambda: binary)
     monkeypatch.setattr(hud, "owner_pid", lambda: 69215)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
     monkeypatch.delenv("TMUX_PANE", raising=False)
 
     captured = {}
@@ -370,3 +372,79 @@ def test_launch_omits_watch_pid_when_owner_unknown(monkeypatch, tmp_path):
     )
     assert hud.launch("/tmp/p.png", "Ada") is True
     assert "--watch-pid" not in captured["args"]
+
+
+def test_launch_passes_tty_from_controlling_tty(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: "/dev/ttys003")
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    args = captured["args"]
+    assert "--tty" in args and "/dev/ttys003" in args
+
+
+def test_launch_omits_tty_when_unresolved(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    assert "--tty" not in captured["args"]
+
+
+def test_controlling_tty_non_tmux_uses_owner_pid(monkeypatch):
+    monkeypatch.setattr(hud, "owner_pid", lambda: 123)
+
+    def fake_run(args, **kwargs):
+        assert args == ["ps", "-o", "tty=", "-p", "123"]
+        return types.SimpleNamespace(stdout="ttys003\n")
+
+    monkeypatch.setattr(hud.subprocess, "run", fake_run)
+    assert hud._controlling_tty(None) == "/dev/ttys003"
+
+
+def test_controlling_tty_non_tmux_none_when_no_owner(monkeypatch):
+    monkeypatch.setattr(hud, "owner_pid", lambda: None)
+    assert hud._controlling_tty(None) is None
+
+
+def test_controlling_tty_non_tmux_none_when_no_tty(monkeypatch):
+    monkeypatch.setattr(hud, "owner_pid", lambda: 123)
+    monkeypatch.setattr(
+        hud.subprocess, "run", lambda args, **kw: types.SimpleNamespace(stdout="??\n")
+    )
+    assert hud._controlling_tty(None) is None
+
+
+def test_controlling_tty_tmux_uses_client_tty(monkeypatch):
+    monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
+
+    def fake_run(args, **kwargs):
+        if "display-message" in args:
+            return types.SimpleNamespace(stdout="mysession\n")
+        assert args == ["/usr/bin/tmux", "list-clients", "-t", "mysession", "-F", "#{client_tty}"]
+        return types.SimpleNamespace(stdout="/dev/ttys010\n")
+
+    monkeypatch.setattr(hud.subprocess, "run", fake_run)
+    assert hud._controlling_tty("%3") == "/dev/ttys010"

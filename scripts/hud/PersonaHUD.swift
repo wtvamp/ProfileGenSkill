@@ -25,6 +25,11 @@ struct Options {
     // persona's overlay would sit on top of whichever tmux window happens to be visible.
     var tmuxPane = ""
     var tmuxBin = ""
+    // The /dev/ttyNNN of the iTerm2 window this persona's session actually lives in. Several
+    // iTerm2 windows can be open at once, each potentially running its own session/persona --
+    // this is what lets terminalWindowFrame() pick the *right* one instead of just grabbing
+    // whichever iTerm2 window happens to be frontmost/first in on-screen z-order.
+    var tty = ""
     // The session this overlay belongs to. It runs detached so it survives the command that
     // started it, which also means nothing else would ever clean it up -- watching this pid is
     // what makes it disappear when the session exits, with no hook to configure.
@@ -46,6 +51,7 @@ func parseArgs() -> Options {
         case "--owner": o.ownerName = value()
         case "--tmux-pane": o.tmuxPane = value()
         case "--tmux-bin": o.tmuxBin = value()
+        case "--tty": o.tty = value()
         case "--watch-pid": o.watchPid = pid_t(Int32(value()) ?? 0)
         default: break
         }
@@ -130,8 +136,58 @@ final class Controller: NSObject {
         super.init()
     }
 
-    /// Frontmost normal window belonging to the terminal app, in Quartz (top-left origin) space.
-    func terminalWindowFrame() -> CGRect? {
+    /// Bounds of the specific iTerm2 window whose tty matches `opts.tty`, plus whether that window
+    /// is the frontmost of iTerm2's *own* windows (index 1 of `windows`, which iTerm2 -- like most
+    /// scriptable Cocoa apps -- returns in front-to-back order). Asking iTerm2 directly (rather
+    /// than guessing from on-screen z-order) is what makes the bounds correct when more than one
+    /// iTerm2 window is open. The frontmost flag matters separately: two iTerm2 windows can sit at
+    /// nearly identical screen bounds (one maximized behind another), in which case "iTerm2 is the
+    /// frontmost app" is true for both of their overlays at once -- only this flag tells an overlay
+    /// whose window is actually occluded that it should hide rather than draw on top of the one
+    /// that's really on screen.
+    struct WindowLookup {
+        var frame: CGRect
+        var isFrontmost: Bool
+    }
+
+    func windowFrame(forTTY tty: String) -> WindowLookup? {
+        guard !tty.isEmpty else { return nil }
+        let escaped = tty.replacingOccurrences(of: "\\", with: "\\\\")
+                          .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = """
+        tell application "iTerm2"
+            repeat with i from 1 to count of windows
+                set w to item i of windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if (tty of s) as string is "\(escaped)" then
+                            set b to bounds of w
+                            return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string) & "," & (i as string)
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+        end tell
+        """
+        guard let script = NSAppleScript(source: source) else { return nil }
+        var errorInfo: NSDictionary?
+        let result = script.executeAndReturnError(&errorInfo)
+        guard errorInfo == nil, let str = result.stringValue else { return nil }
+        let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 5,
+              let x1 = Double(parts[0]), let y1 = Double(parts[1]),
+              let x2 = Double(parts[2]), let y2 = Double(parts[3]),
+              let index = Int(parts[4])
+        else { return nil }
+        return WindowLookup(frame: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
+                             isFrontmost: index == 1)
+    }
+
+    /// First on-screen window belonging to the terminal app, in Quartz (top-left origin) space.
+    /// Used only when the tty lookup above isn't available (non-iTerm2 owner, tty unresolved, or
+    /// the AppleScript call failed) -- picking "first in on-screen z-order" is a guess that's wrong
+    /// the instant more than one such window is open, but it's the best fallback available then.
+    func fallbackWindowFrame() -> CGRect? {
         let opt: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(opt, kCGNullWindowID) as? [[String: Any]]
         else { return nil }
@@ -221,8 +277,24 @@ final class Controller: NSObject {
             NSApp.terminate(nil)
             return
         }
-        let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName
-        guard frontmost == opts.ownerName, let quartz = terminalWindowFrame() else {
+        let frontmostApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        guard frontmostApp == opts.ownerName else {
+            panel.orderOut(nil)
+            return
+        }
+
+        let quartz: CGRect
+        if opts.ownerName == "iTerm2", let lookup = windowFrame(forTTY: opts.tty) {
+            // Two iTerm2 windows can occupy nearly identical screen bounds (one maximized behind
+            // another) -- "iTerm2 is frontmost" alone can't tell those apart, only this can.
+            guard lookup.isFrontmost else {
+                panel.orderOut(nil)
+                return
+            }
+            quartz = lookup.frame
+        } else if let fallback = fallbackWindowFrame() {
+            quartz = fallback
+        } else {
             panel.orderOut(nil)
             return
         }

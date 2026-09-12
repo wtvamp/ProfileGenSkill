@@ -171,6 +171,52 @@ def _active_tmux_pane() -> str | None:
     return None
 
 
+def _controlling_tty(pane: str | None) -> str | None:
+    """The /dev/ttyNNN of the iTerm2 window hosting this session.
+
+    Needed to target the right window when more than one iTerm2 window is open at once (see
+    PersonaHUD.swift's windowFrame(forTTY:)) -- without it, the overlay just grabs whichever
+    iTerm2 window happens to be frontmost/first in z-order, which is wrong the moment a second
+    window exists: every persona's overlay ends up pinned to that one window instead of its own.
+
+    Under tmux the pane's own pty is a *different* device from the iTerm2 window's pty (tmux
+    allocates a fresh one per pane), so the pane's own controlling tty is useless here -- we ask
+    tmux which client is attached to the pane's session and use that client's tty instead.
+    Outside tmux, the owning process's own controlling tty already is the iTerm2 window's tty.
+    """
+    tmux_bin = shutil.which("tmux")
+    if pane and tmux_bin:
+        try:
+            session = subprocess.run(
+                [tmux_bin, "display-message", "-pt", pane, "-F", "#{session_name}"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            if not session:
+                return None
+            out = subprocess.run(
+                [tmux_bin, "list-clients", "-t", session, "-F", "#{client_tty}"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+        tty = out.splitlines()[0].strip() if out else ""
+        return tty or None
+
+    pid = owner_pid()
+    if pid is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "tty=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not out or out in ("??", "?"):
+        return None
+    return f"/dev/{out}"
+
+
 def _pane_key() -> str:
     """Identifies the tmux pane this persona belongs to.
 
@@ -302,6 +348,14 @@ def launch(
         tmux_bin = shutil.which("tmux")
         if tmux_bin:
             args += ["--tmux-pane", pane, "--tmux-bin", tmux_bin]
+
+    # Which physical iTerm2 window to draw over -- see _controlling_tty()'s docstring for why
+    # this can't just be "whichever iTerm2 window is frontmost": with more than one iTerm2 window
+    # open, that guess is wrong for every overlay except the one belonging to that window.
+    if not sys.platform.startswith("win"):
+        tty = _controlling_tty(pane)
+        if tty:
+            args += ["--tty", tty]
 
     # so the overlay exits by itself when the session it belongs to does
     watch = owner_pid()
