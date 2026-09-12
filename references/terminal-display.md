@@ -102,7 +102,7 @@ This hook needs no `--profile` argument — plain `--root` mode discovers whiche
 
 ## A spoken self-introduction via the same hook
 
-`scripts/session_intro.py` is a separate `SessionStart` hook script that makes Claude actually introduce itself at the top of a session — name, personality, and a one- or two-line summary of what's been worked on lately, drawn from `git log` in the project. It's independent of the `hud`/`inline`/`state` display above (it prints text/context, not an image), so the two can be wired in together or separately.
+`scripts/session_intro.py` is a separate `SessionStart` hook script that makes Claude actually introduce itself at the top of a session — name, personality, and a one- or two-line summary of what's been worked on lately. That summary is drawn from Claude Code's own auto-memory index for the project (`MEMORY.md` under `~/.claude/projects/<sanitized-root>/memory/`, or under `$CLAUDE_CONFIG_DIR` for an alternate config home) when one exists, since that reflects actual past sessions with the user — `git log` is only a fallback for a project with no accumulated memory yet. It's independent of the `hud`/`inline`/`state` display above (it prints text/context, not an image), so the two can be wired in together or separately.
 
 ```json
 {
