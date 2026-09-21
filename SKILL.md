@@ -1,7 +1,7 @@
 ---
 name: profile-gen
-description: Generate a persona for an AI agent — a profile image (with optional animated GIF), a human-like name, an optional voice reference, and an optional personality description — and record it as a standalone markdown profile with a one-line auto-discoverable reference kept in CLAUDE.md (or, optionally, fully inlined into CLAUDE.md). Private/NSFW personas can be kept entirely out of git while still being auto-loaded via that reference. Supports ChatGPT/Grok (with an API key), the Grok CLI (no API key — uses a Grok/X subscription via `grok login`), or a self-hosted ComfyUI server (no account needed — the skill can author a workflow for you, LoRA picks included, if you don't already have one).
-argument-hint: "[description hints] [--backend chatgpt|grok|grok-cli|comfyui] [--nsfw] [--gif] [--voice NAME] [--output claude-md-ref|claude-md|file] [--assets tracked|gitignored] [--name NAME] [--no-image] [--no-name]"
+description: Generate a persona for an AI agent — a profile image (with optional animated GIF), a human-like name, an optional voice reference, and an optional personality description — and record it as a standalone markdown profile with a one-line auto-discoverable reference kept in CLAUDE.md (or, optionally, fully inlined into CLAUDE.md). Every persona gets a SFW picture and optionally an NSFW one, swapped on demand with `/display-profile nsfw on|off|toggle`. Private/NSFW personas can be kept entirely out of git while still being auto-loaded via that reference. Supports ChatGPT/Grok (with an API key), the Grok CLI (no API key — uses a Grok/X subscription via `grok login`), or a self-hosted ComfyUI server (no account needed — the skill can author a workflow for you, LoRA picks included, if you don't already have one).
+argument-hint: "[description hints] [--backend chatgpt|grok|grok-cli|comfyui] [--nsfw (also make an NSFW variant)] [--gif] [--voice NAME] [--output claude-md-ref|claude-md|file] [--assets tracked|gitignored] [--name NAME] [--no-image] [--no-name]"
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion, Agent
 ---
 
@@ -32,7 +32,8 @@ Two directories matter here and **they are almost always different**:
 ## 1. Parse arguments
 
 Parse whatever the user typed after `/profile-gen` for: free-text description hints, `--backend
-chatgpt|grok|grok-cli|comfyui`, `--nsfw`, `--gif`, `--voice NAME`,
+chatgpt|grok|grok-cli|comfyui`, `--nsfw` (meaning "also generate an NSFW variant", not "make this
+persona explicit" — the SFW picture is generated either way), `--gif`, `--voice NAME`,
 `--output claude-md-ref|claude-md|file`, `--assets tracked|gitignored`, `--name NAME`,
 `--no-image`, `--no-name`. Anything not recognized as a flag is a description hint.
 
@@ -54,8 +55,10 @@ time):
   real usage per call and has no seed/size control — see `references/backends.md`) / comfyui (no
   account or API key needed at all — point it at your own ComfyUI server; if you don't have a
   workflow set up yet, this skill can build one for you, LoRA picks included — see step 4a).
-- **NSFW**: on/off. Purely a pass-through flag (see `references/prompting.md`) — no client-side
-  filtering happens in this skill regardless of the answer.
+- **NSFW variant**: yes/no. Every persona gets a SFW picture; this asks whether to *also*
+  generate an NSFW one of the same character, which `/display-profile nsfw on|off|toggle` then
+  swaps between. The NSFW clause is purely a pass-through into the prompt (see
+  `references/prompting.md`) — no client-side filtering happens in this skill either way.
 - **GIF**: whether to also produce an animated version.
 - **Voice**: a reference string, or none. See `references/voices.md` for sample names — don't
   invent audio, this is metadata only.
@@ -170,7 +173,7 @@ restrictions" language helps on local ComfyUI but reliably triggers refusals on 
 (Grok, Grok CLI, ChatGPT), which need tasteful/suggestive framing instead. Hand-typing a clause
 yourself risks using the wrong one, or duplicating what the script already adds.
 
-## 7. Generate the image
+## 7. Generate the image (the SFW picture)
 
 Decide the image's path yourself as `<asset_dir>/<slug>.png` (using the `asset_dir` from step 5
 and the `slug` from step 3), then:
@@ -189,6 +192,10 @@ drafted, so the recorded provenance matches what was really sent.
 Only pass `--workflow` when step 4a built one; otherwise the backend falls back to
 `COMFYUI_WORKFLOW`/config (irrelevant for chatgpt/grok).
 
+**Do not pass `--nsfw` here.** This call produces the persona's SFW picture — the one that is
+always present, the one the markdown body shows, and the one `display.variant: sfw` points at.
+The NSFW variant is a second call, in step 7b.
+
 Prints `{"path", "backend", "model", "seed", "width", "height"}` as JSON. Hold onto the returned
 `path` — it's the still image, used as input to step 8, and becomes the profile's `image` field
 in step 9 **only if no GIF ends up being generated**. When Pillow is installed (the normal case),
@@ -200,6 +207,29 @@ are always the real, final dimensions of what was actually saved, not a backend'
 unverified size. Without Pillow installed, no cropping/format-conversion happens (the actual file
 may end in `.jpg` instead of `.png`, e.g. Grok's JPEG output) and `width`/`height` may be `null`
 for backends that don't actually control their own output size.
+
+## 7b. Generate the NSFW variant (optional)
+
+Only if the user asked for one in step 2. Run `generate_image.py` **again** with the same
+`--prompt-file`, the same `--style-preset`, **the same `--seed`** (pass step 7's returned `seed`
+explicitly — this is what makes the two pictures the same person rather than two strangers), plus
+`--nsfw`, writing to `<asset_dir>/<slug>-nsfw.png`:
+
+```
+python3 scripts/generate_image.py --backend <backend> --prompt-file <prompt.txt> \
+  [--negative-file <negative.txt>] --nsfw --seed <seed from step 7> \
+  --out <asset_dir>/<slug>-nsfw.png [--style-preset "<short style clause>"] \
+  [--workflow <asset_dir>/comfyui-workflow.json]
+```
+
+`prompt.build()` appends the backend-appropriate NSFW clause and strips the content-suppressing
+terms from the negative prompt for this call only, so the same drafted prompt yields the two
+variants. Grok CLI ignores `--seed` entirely (see `references/backends.md`), so for that backend
+tell the user the two pictures may not match closely.
+
+Hold onto this path — it becomes the profile's `image_nsfw` field in step 9. If this call fails
+or the backend refuses, say so plainly and carry on with a SFW-only persona; it is optional, and
+a refusal here is not a reason to lose the picture step 7 already produced.
 
 ## 8. Generate the GIF (optional)
 
@@ -230,18 +260,27 @@ caught; if it slipped through anyway, that's worth surfacing, not papering over)
 back to synthetic once they've acknowledged native generation didn't work. The user explicitly
 wants real subject animation when they ask for a GIF; a silent downgrade defeats that.
 
-**There is only one `image` field, never two.** If this step ran, its returned `path` (the GIF)
+**Each variant holds one file, never two.** If this step ran, its returned `path` (the GIF)
 *replaces* the PNG from step 7 as the profile's `image` — the still PNG was only ever an
 intermediate input (synthetic mode needs it directly; native mode still uses it to establish the
 subject). Only fall back to the step 7 PNG path as `image` if this step was skipped entirely.
 
+If step 7b produced an NSFW variant, run `make_gif.py` a second time for it too (`--png
+<nsfw png> --out <asset_dir>/<slug>-nsfw.gif`, adding `--nsfw`), so toggling variants doesn't
+switch between an animated picture and a static one. Use the same `--mode` result for both; if
+the second call fails, keep the still PNG as `image_nsfw` and tell the user that variant isn't
+animated.
+
 ## 9. Write the profile
 
-Assemble a fields JSON object per `references/profile-schema.md` (name, slug, image, nsfw,
-display, generation, plus voice/personality if set) to a temp file. Set `image` to the GIF path
-from step 8 if one was generated, otherwise the PNG path from step 7 — never both, there's no
-separate animated-image field. Set `generation.gif_mode` to the `mode` step 8 reported, or `null`
-if step 8 was skipped. Set `display.image`/`display.name` from step 1's `--no-image`/`--no-name`
+Assemble a fields JSON object per `references/profile-schema.md` (name, slug, image, display,
+generation, plus voice/personality/image_nsfw if set) to a temp file. Set `image` to the SFW GIF
+path from step 8 if one was generated, otherwise the SFW PNG path from step 7 — never both,
+there's no separate animated-image field. Set `image_nsfw` the same way from steps 7b/8 if an
+NSFW variant was produced, and leave it out entirely otherwise. **Do not set `nsfw` yourself** —
+`write_profile.py` derives it from `image_nsfw` and rejects a fields file that sets it by hand.
+New personas start on `display.variant: sfw`. Set `generation.gif_mode` to the `mode` step 8
+reported, or `null` if step 8 was skipped. Set `display.image`/`display.name` from step 1's `--no-image`/`--no-name`
 parse (`true` unless the flag was given — `write_profile.py` also fills in `true` for either key
 if you omit `display` entirely, so it's safe to leave out when both are on). Then:
 
@@ -253,7 +292,8 @@ python3 scripts/write_profile.py --fields-file <fields.json> --root <PROJECT_ROO
 This renders the markdown, writes it to the planned path, updates `.gitignore` when `--assets
 gitignored`, and for `--output claude-md-ref` also writes/replaces the one-line `@`-import block
 in `<PROJECT_ROOT>/CLAUDE.md`. Prints `{"markdown_path", "image_path", "gitignore_updated",
-"claude_md_updated", "claude_md_path"}` (`claude_md_path` is `null` for `--output file`).
+"claude_md_updated", "claude_md_path"}` — plus `image_nsfw_path`, which is `null` for a
+SFW-only persona (`claude_md_path` is `null` for `--output file`).
 
 ## 10. Preview in the terminal
 
@@ -295,6 +335,10 @@ reference was added to CLAUDE.md and the persona's actual content lives at `mark
 (private/gitignored if that's what `--assets` was set to). Also mention whether the terminal
 preview actually drew an image (vs. silently skipping for lack of protocol support) and whether
 they want the SessionStart hooks set up for persistent display and/or the spoken self-intro.
+
+If an NSFW variant was generated, say where it landed and that the persona is showing the SFW
+picture — `/display-profile nsfw on` (or `toggle`) switches, and `/display-profile nsfw off`
+switches back. Don't display the NSFW variant unasked, even when the user asked for one to exist.
 
 ## Reference files
 

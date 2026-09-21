@@ -22,13 +22,12 @@ def _run(args, cwd, env=None):
     )
 
 
-def _write_profile(tmp_path, name, slug, output, assets):
+def _write_profile(tmp_path, name, slug, output, assets, with_nsfw=False):
     fields = {
         "schema_version": 1,
         "name": name,
         "slug": slug,
         "image": f"{slug}.png",
-        "nsfw": False,
         "generation": {
             "backend": "mock",
             "model": "mock-v1",
@@ -39,6 +38,8 @@ def _write_profile(tmp_path, name, slug, output, assets):
             "created_at": "2026-01-01T00:00:00Z",
         },
     }
+    if with_nsfw:
+        fields["image_nsfw"] = f"{slug}-nsfw.png"
     fields_file = tmp_path / f"{slug}-fields.json"
     fields_file.write_text(json.dumps(fields), encoding="utf-8")
     result = _run(
@@ -58,7 +59,87 @@ def _write_profile(tmp_path, name, slug, output, assets):
     assert result.returncode == 0, result.stdout + result.stderr
     write_result = json.loads(result.stdout)
     (tmp_path / write_result["image_path"]).write_bytes(_TINY_PNG)
+    if write_result.get("image_nsfw_path"):
+        (tmp_path / write_result["image_nsfw_path"]).write_bytes(_TINY_PNG)
     return write_result
+
+
+def test_variant_defaults_to_sfw_and_toggles_to_nsfw_and_back(tmp_path):
+    write_result = _write_profile(
+        tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True
+    )
+    markdown_path = Path(write_result["markdown_path"])
+    assert "variant: sfw" in markdown_path.read_text(encoding="utf-8")
+
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "toggle"],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["display"]["variant"] == "nsfw"
+    assert "variant: nsfw" in markdown_path.read_text(encoding="utf-8")
+
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "toggle"],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["display"]["variant"] == "sfw"
+    assert "variant: sfw" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_variant_set_explicitly(tmp_path):
+    write_result = _write_profile(
+        tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True
+    )
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["display"]["variant"] == "nsfw"
+    # setting it again is idempotent, not a toggle
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"],
+        cwd=REPO_ROOT,
+    )
+    assert json.loads(result.stdout)["display"]["variant"] == "nsfw"
+    assert Path(write_result["markdown_path"]).read_text(encoding="utf-8").count("variant:") == 1
+
+
+def test_switching_to_a_variant_with_no_picture_is_refused(tmp_path):
+    write_result = _write_profile(tmp_path, "Plain Jane", "plain-jane", "claude-md-ref", "tracked")
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode != 0
+    assert "no nsfw picture" in json.loads(result.stdout)["error"]
+    # and the profile is left exactly as it was
+    assert "variant: sfw" in Path(write_result["markdown_path"]).read_text(encoding="utf-8")
+
+
+def test_variant_appended_to_a_profile_written_before_it_existed(tmp_path):
+    write_result = _write_profile(tmp_path, "Ada Sterling", "ada-sterling", "claude-md-ref", "tracked")
+    markdown_path = Path(write_result["markdown_path"])
+
+    # strip the variant line to simulate a pre-variant profile, and give it an nsfw picture
+    text = markdown_path.read_text(encoding="utf-8")
+    text = text.replace("  variant: sfw\n", "")
+    text = text.replace(
+        'image: "ada-sterling.png"\n',
+        'image: "ada-sterling.png"\nimage_nsfw: "ada-sterling-nsfw.png"\n',
+    )
+    markdown_path.write_text(text, encoding="utf-8")
+    (tmp_path / "ada-sterling-nsfw.png").write_bytes(_TINY_PNG)
+
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["display"]["variant"] == "nsfw"
+    assert "variant: nsfw" in markdown_path.read_text(encoding="utf-8")
 
 
 def test_toggle_image_off_on_standalone_persona(tmp_path):

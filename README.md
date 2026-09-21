@@ -69,12 +69,32 @@ follows, and pass `--workflow`/`--gif-workflow` to `generate_image.py`/`check_co
 
 `scripts/show_profile.py` shows a persona's picture and/or name inline in the terminal — iTerm2/WezTerm, Kitty/Ghostty, and sixel (via `img2sixel`) are all supported, sized to roughly 10% of the terminal's width, with a silent no-op in a terminal that supports none of those. `--no-image`/`--no-name` at generation time turn either off per-persona (both default on). See `references/terminal-display.md` for protocol/sizing details and a `SessionStart` hook snippet that shows a project's persona automatically at the start of every future session, not just right after generating it.
 
-## NSFW
+## SFW and NSFW pictures
 
-`--nsfw` is a pure pass-through flag: it's forwarded unmodified to whichever backend you picked
-(plus a `moderation: "low"` request param, ChatGPT only), and it shapes the personality
-description Claude writes. No client-side filtering is layered on top in either direction — see
-`references/prompting.md`.
+Every persona has a **SFW picture** (`image`). `--nsfw` adds a second, optional **NSFW picture**
+(`image_nsfw`) of the same character — same backend, same seed, same base prompt, regenerated
+with the NSFW clause appended — rather than making the persona's one picture explicit.
+
+Which of the two is on screen is the persona's `display.variant`, and it starts at `sfw`:
+
+```
+/display-profile nsfw on       # show the NSFW picture
+/display-profile nsfw off      # back to the SFW one
+/display-profile nsfw toggle   # flip to whichever isn't showing
+```
+
+The switch is persisted in the profile's own markdown, so it survives across sessions until
+switched back, and it touches nothing else about the persona. The NSFW picture is referenced
+from the profile's frontmatter only — the markdown body's visible image is always the SFW one,
+so an explicit picture never gets inlined into a tracked `CLAUDE.md`.
+
+The NSFW clause itself is a pure pass-through: it's forwarded unmodified to whichever backend
+you picked (plus a `moderation: "low"` request param, ChatGPT only), and it shapes the
+personality description Claude writes. No client-side filtering is layered on top in either
+direction — see `references/prompting.md`.
+
+A profile written before this existed (one `image`, `nsfw: true`) still works: its single
+picture is treated as the NSFW variant, and it displays exactly as it always did.
 
 ## Output and asset placement
 

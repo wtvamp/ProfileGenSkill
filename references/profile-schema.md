@@ -10,10 +10,11 @@ plain language and shows one example of each render mode.
 | `schema_version` | yes | `1` (const) | Bump only if the schema shape changes. |
 | `name` | yes | string | Human-readable display name, e.g. `"Ada Sterling"`. |
 | `slug` | yes | string | `^[a-z0-9]+(-[a-z0-9]+)*$` — derived from `name` via `storage.slugify()`. Used in file/dir names and as the CLAUDE.md marker-block key. |
-| `image` | yes | string (path) | Path to the profile's single picture, relative to the repo root — a static PNG, or an animated GIF if one was generated (see `generation.gif_mode`). There is only ever one image field; a GIF replaces the PNG here rather than sitting alongside it. |
+| `image` | yes | string (path) | Path to the persona's **SFW** picture, relative to the repo root — a static PNG, or an animated GIF if one was generated (see `generation.gif_mode`). One file, not both; a GIF replaces the PNG here rather than sitting alongside it. This is also the picture the markdown body's visible `![name](...)` points at, always. |
+| `image_nsfw` | no | string (path) or `null` | Path to the persona's optional **NSFW** picture — the same character from the same seed and base prompt, generated a second time with the NSFW clause added. Referenced from the frontmatter only; it is never inlined as the markdown body's visible image, so it can't surface in a tracked CLAUDE.md. |
 | `voice` | no | string or `null` | Opaque voice-name reference (e.g. a Kokoro TTS voice like `af_jessica`). Metadata only — no audio is synthesized. See `references/voices.md`. |
 | `personality` | no | string or `null` | Free-form prose description of the persona's personality/register. |
-| `nsfw` | yes | boolean | Whether this profile was generated in NSFW mode. Threads through to `generation.prompt`/`generation.negative_prompt` and the backend call — see `references/prompting.md`. |
+| `nsfw` | yes | boolean | **Derived, not supplied**: true exactly when `image_nsfw` is set, i.e. "this persona has an NSFW variant available to switch to". `write_profile.py` computes it and rejects a fields file that passes `nsfw: true` without an `image_nsfw`. |
 | `display` | yes | object | Whether `scripts/show_profile.py` shows this persona's picture/name inline in the terminal. See below. |
 | `generation` | yes | object | Provenance of how the image was produced. See below. |
 
@@ -24,11 +25,22 @@ plain language and shows one example of each render mode.
 | `image` | yes | boolean | Show the profile picture inline in a supporting terminal (iTerm2/WezTerm, Kitty, or sixel via `img2sixel`) when `show_profile.py` runs. Set at generation time via `--show-image`/`--no-image`; `true` by default. |
 | `name` | yes | boolean | Print the persona's name when `show_profile.py` runs. Set via `--show-name`/`--no-name`; `true` by default. |
 | `autostart` | yes | boolean | Whether a `SessionStart` hook shows this persona *on its own*. Separate from `image`/`name`, which say what gets drawn once it is shown — `autostart: false` keeps a persona fully available via `/display-profile` while stopping it appearing unprompted. Only consulted under `show_profile.py --autostart-only` (what the hook passes); `true` by default. |
+| `variant` | yes | `"sfw"` \| `"nsfw"` | *Which* of the persona's two pictures is currently on screen. `"sfw"` by default, and forced to `"sfw"` at write time for a persona with no `image_nsfw`. Flipped by `/display-profile nsfw on\|off\|toggle` (`toggle_display.py --variant`), which touches this one line and nothing else. `show_profile.py --variant` overrides it for one invocation without changing it. |
 
 Written by every profile-gen run from this point forward. A profile written before this field
 existed simply lacks it — `show_profile.py` treats a missing `display` (or a missing `image`/
-`name` key within it) as `true`, so older profiles keep behaving as if both were on. See
-`references/terminal-display.md` for how `show_profile.py` uses this.
+`name` key within it) as `true`, so older profiles keep behaving as if both were on, and a
+missing `variant` as `"sfw"`. `toggle_display.py` appends a key the block doesn't have yet
+rather than erroring. See `references/terminal-display.md` for how `show_profile.py` uses this.
+
+### Profiles written before variants existed
+
+Such a profile has one `image` and no `image_nsfw`, and its `nsfw` flag meant "this one picture
+is explicit". `profilegen/variants.py` reinterprets that shape rather than breaking it: when
+`nsfw: true` and there is no `image_nsfw`, the single picture is treated as the **NSFW** variant
+and the persona has no SFW one. It therefore still displays exactly as it always did, and asking
+for the SFW variant reports that there isn't one instead of quietly showing the explicit picture.
+A legacy `nsfw: false` profile is an ordinary SFW-only persona, unchanged.
 
 ### `generation` object
 
@@ -36,11 +48,14 @@ existed simply lacks it — `show_profile.py` treats a missing `display` (or a m
 |---|---|---|---|
 | `backend` | yes | `"chatgpt"` \| `"grok"` \| `"grok-cli"` \| `"comfyui"` \| `"mock"` | Which backend produced the image. |
 | `model` | yes | string | Backend-reported model identifier (e.g. `gpt-image-1`, `grok-2-image`). |
-| `prompt` | yes | string | Final positive prompt sent to the backend (including the NSFW clause, if any). |
+| `prompt` | yes | string | Final positive prompt sent to the backend for the **SFW** picture. The NSFW variant is the same prompt plus the NSFW clause `prompt.py` appends, so it isn't recorded separately. |
 | `negative_prompt` | no | string or `null` | Final negative prompt, if the backend supports one (ComfyUI). `null` for backends without a negative-prompt concept. |
 | `seed` | yes | integer or `null` | Seed used for the generation, when known. |
 | `gif_mode` | yes | `"native"` \| `"synthetic"` \| `null` | Whether `image` is an animated GIF and how it was produced, or `null` when `image` is a plain static PNG. |
 | `created_at` | yes | string (ISO 8601 date-time) | When the profile was generated. |
+
+`generation` describes both variants: they come from one backend, one model, one seed and one
+base prompt, which is exactly what makes them the same person.
 
 A GIF-based profile looks identical except `image` ends in `.gif` and `gif_mode` is
 `"native"`/`"synthetic"` instead of `null` — e.g. `image: "profiles/ada-sterling/ada-sterling.gif"`,
@@ -63,6 +78,7 @@ display:
   image: true
   name: true
   autostart: true
+  variant: sfw
 generation:
   backend: "mock"
   model: "mock-v1"
@@ -137,6 +153,7 @@ display:
   image: true
   name: true
   autostart: true
+  variant: sfw
 generation:
   backend: "mock"
   model: "mock-v1"
