@@ -47,6 +47,8 @@ Every measurement — padding, gap, corner radii, font size — is a fraction of
 
 Each persona's `display.image`/`display.name` fields (see `references/profile-schema.md`) control this — set at generation time via `--show-image`/`--no-image`/`--show-name`/`--no-name`, defaulting to `true`/`true`. A profile written before these fields existed is treated as `true` too.
 
+`display.variant` answers a third question: not whether to draw a picture, but **which** picture. A persona has a SFW picture (`image`) and optionally an NSFW one (`image_nsfw`); `variant` is `sfw` or `nsfw` and decides which of them the overlay loads. It defaults to `sfw`, and `show_profile.py --variant sfw|nsfw` overrides it for one invocation without changing what's stored. Asking for a variant the persona has no picture for falls back to the one it does have rather than drawing nothing, and the JSON report says so via `variant_fell_back`. See `scripts/profilegen/variants.py`, which also explains how a profile written before variants existed is reinterpreted rather than broken.
+
 `display.autostart` answers a different question: not *what* to draw, but whether this persona appears **on its own** at session start. It's consulted only under `--autostart-only`, which is what the `SessionStart` hook passes — so `autostart: false` keeps a persona fully displayable via `/display-profile` while stopping it appearing unprompted. Useful when several projects each have a persona and only some should announce themselves. Defaults to `true`, so personas written before the field keep appearing rather than silently stopping.
 
 Two invocation modes:
@@ -147,12 +149,14 @@ It discovers the persona the same way `show_profile.py --root` does (via `CLAUDE
 
 ## Toggling display on/off after the fact
 
-`scripts/toggle_display.py` flips a persona's stored `display.image`/`display.name` in place, without regenerating anything else about it:
+`scripts/toggle_display.py` flips a persona's stored display preferences in place, without regenerating anything else about it:
 
 ```
-python3 scripts/toggle_display.py --root <PROJECT_ROOT> [--slug SLUG] [--image on|off] [--name on|off]
+python3 scripts/toggle_display.py --root <PROJECT_ROOT> [--slug SLUG] [--image on|off] [--name on|off] [--autostart on|off] [--variant sfw|nsfw|toggle]
 ```
+
+`--variant toggle` flips to whichever picture isn't currently showing; `--variant nsfw` on a persona with no NSFW picture is refused with an error rather than silently doing nothing, since the fix is to generate one with `/profile-gen`, not to try again here.
 
 It uses the same `<PROJECT_ROOT>/CLAUDE.md` discovery as `show_profile.py` (via the shared `profilegen.discovery` module), so it finds whichever persona(s) are currently referenced there — pass `--slug` to target just one if more than one is discovered. It edits whichever file that persona's content actually lives in: the standalone `persona.md`/`profiles/<slug>/<slug>.md` for `claude-md-ref`, or that persona's own marker-delimited region inside `CLAUDE.md` itself for a fully-embedded (`claude-md`) persona — `frontmatter.block_span()` confines the edit so a different embedded persona's block is never touched. Prints one JSON object per persona changed: `{"slug", "markdown_path", "display": {...}}`, or `{"error": "..."}` (nonzero exit) if no persona was found.
 
-The `/display-profile` user command (`~/.claude/commands/display-profile.md`) wraps both scripts for interactive use: `/display-profile` previews, `/display-profile on|off` or `image on|off`/`name on|off` toggles then previews, and `/display-profile hook on|off` delegates the `SessionStart` hook setup above to the `update-config` skill.
+The `/display-profile` user command (`~/.claude/commands/display-profile.md`) wraps both scripts for interactive use: `/display-profile` previews, `/display-profile on|off` or `image on|off`/`name on|off` toggles then previews, `/display-profile nsfw on|off|toggle` switches which picture is shown and re-draws, and `/display-profile hook on|off` delegates the `SessionStart` hook setup above to the `update-config` skill.

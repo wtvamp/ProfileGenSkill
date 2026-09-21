@@ -11,6 +11,8 @@ nsfw: false
 display:
   image: true
   name: true
+  autostart: true
+  variant: sfw
 generation:
   backend: "mock"
   model: "mock-v1"

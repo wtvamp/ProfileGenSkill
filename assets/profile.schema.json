@@ -9,6 +9,7 @@
     "name": { "type": "string", "minLength": 1 },
     "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
     "image": { "type": "string", "minLength": 1 },
+    "image_nsfw": { "type": ["string", "null"] },
     "voice": { "type": ["string", "null"] },
     "personality": { "type": ["string", "null"] },
     "nsfw": { "type": "boolean" },
@@ -17,7 +18,8 @@
       "properties": {
         "image": { "type": "boolean" },
         "name": { "type": "boolean" },
-        "autostart": { "type": "boolean" }
+        "autostart": { "type": "boolean" },
+        "variant": { "type": "string", "enum": ["sfw", "nsfw"] }
       },
       "additionalProperties": false
     },

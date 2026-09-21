@@ -123,16 +123,25 @@ _DISPLAY_BLOCK_RE = re.compile(r"^display:[ \t]*\n((?:[ \t]+\S[^\n]*\n)*)", re.M
 _DISPLAY_KEY_RE = re.compile(r"^([ \t]+)([A-Za-z0-9_]+):[ \t]*(.*)$")
 
 
+def _display_value(value: bool | str) -> str:
+    """YAML spelling for a display flag: lowercase booleans, plain unquoted strings."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def set_display_flags(
     text: str,
     *,
     image: bool | None = None,
     name: bool | None = None,
     autostart: bool | None = None,
+    variant: str | None = None,
     region: tuple[int, int] | None = None,
 ) -> str:
-    """Set ``display.image``/``display.name``/``display.autostart`` booleans in place. Only the
-    flags actually passed (not ``None``) are changed; passing none is a no-op.
+    """Set ``display.image``/``display.name``/``display.autostart`` booleans, and/or the
+    ``display.variant`` string (``sfw``/``nsfw``), in place. Only the keys actually passed (not
+    ``None``) are changed; passing none is a no-op.
 
     Works on the ``display:`` block as a block rather than matching a fixed key order, so it
     neither breaks when keys are added nor cares how they're ordered -- and a key the block
@@ -148,7 +157,12 @@ def set_display_flags(
     """
     updates = {
         key: value
-        for key, value in (("image", image), ("name", name), ("autostart", autostart))
+        for key, value in (
+            ("image", image),
+            ("name", name),
+            ("autostart", autostart),
+            ("variant", variant),
+        )
         if value is not None
     }
     if not updates:
@@ -173,13 +187,13 @@ def set_display_flags(
         if key_match and key_match.group(2) in updates:
             key = key_match.group(2)
             seen.add(key)
-            rewritten.append(f"{indent}{key}: {'true' if updates[key] else 'false'}\n")
+            rewritten.append(f"{indent}{key}: {_display_value(updates[key])}\n")
         else:
             rewritten.append(line)
 
     for key, value in updates.items():
         if key not in seen:
-            rewritten.append(f"{indent}{key}: {'true' if value else 'false'}\n")
+            rewritten.append(f"{indent}{key}: {_display_value(value)}\n")
 
     new_segment = (
         segment[: match.start(1)] + "".join(rewritten) + segment[match.end(1) :]

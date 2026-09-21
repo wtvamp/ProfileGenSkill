@@ -26,13 +26,12 @@ def _run(args, cwd, env=None):
     )
 
 
-def _write_profile(tmp_path, name, slug, output, assets, display=None):
+def _write_profile(tmp_path, name, slug, output, assets, display=None, with_nsfw=False):
     fields = {
         "schema_version": 1,
         "name": name,
         "slug": slug,
         "image": f"{slug}.png",
-        "nsfw": False,
         "generation": {
             "backend": "mock",
             "model": "mock-v1",
@@ -43,6 +42,8 @@ def _write_profile(tmp_path, name, slug, output, assets, display=None):
             "created_at": "2026-01-01T00:00:00Z",
         },
     }
+    if with_nsfw:
+        fields["image_nsfw"] = f"{slug}-nsfw.png"
     if display is not None:
         fields["display"] = display
     fields_file = tmp_path / f"{slug}-fields.json"
@@ -65,7 +66,68 @@ def _write_profile(tmp_path, name, slug, output, assets, display=None):
     assert result.returncode == 0, result.stdout + result.stderr
     write_result = json.loads(result.stdout)
     (tmp_path / write_result["image_path"]).write_bytes(_TINY_PNG)
+    if write_result.get("image_nsfw_path"):
+        (tmp_path / write_result["image_nsfw_path"]).write_bytes(_TINY_PNG)
     return write_result
+
+
+def _show(tmp_path, *extra, env=None):
+    result = _run(
+        ["scripts/show_profile.py", "--root", str(tmp_path), "--mode", "state", *extra],
+        cwd=REPO_ROOT,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result, json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_show_defaults_to_the_sfw_picture(tmp_path, force_iterm_env):
+    _write_profile(tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True)
+    _, report = _show(tmp_path, env=force_iterm_env)
+    assert report["variant"] == "sfw"
+    assert report["variant_fell_back"] is False
+
+
+def test_variant_flag_overrides_the_stored_preference_without_changing_it(
+    tmp_path, force_iterm_env
+):
+    write_result = _write_profile(
+        tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True
+    )
+    sfw_result, sfw_report = _show(tmp_path, env=force_iterm_env)
+    nsfw_result, nsfw_report = _show(tmp_path, "--variant", "nsfw", env=force_iterm_env)
+
+    assert sfw_report["variant"] == "sfw"
+    assert nsfw_report["variant"] == "nsfw"
+    # a different picture really was handed to the terminal, not just a different label
+    assert sfw_result.stdout != nsfw_result.stdout
+    # ...and the stored preference is untouched by a display-time override
+    assert "variant: sfw" in Path(write_result["markdown_path"]).read_text(encoding="utf-8")
+
+
+def test_stored_nsfw_variant_is_what_gets_shown(tmp_path, force_iterm_env):
+    _write_profile(
+        tmp_path,
+        "Vera Lux",
+        "vera-lux",
+        "claude-md-ref",
+        "tracked",
+        display={"image": True, "name": True, "autostart": True, "variant": "nsfw"},
+        with_nsfw=True,
+    )
+    _, report = _show(tmp_path, env=force_iterm_env)
+    assert report["variant"] == "nsfw"
+
+
+def test_asking_for_nsfw_on_a_sfw_only_persona_falls_back_rather_than_showing_nothing(
+    tmp_path, force_iterm_env
+):
+    _write_profile(tmp_path, "Plain Jane", "plain-jane", "claude-md-ref", "tracked")
+    _, report = _show(tmp_path, "--variant", "nsfw", env=force_iterm_env)
+    assert report["requested_variant"] == "nsfw"
+    assert report["variant"] == "sfw"
+    assert report["variant_fell_back"] is True
+    assert report["background"] is True
 
 
 def test_write_profile_defaults_display_to_true_true(tmp_path):

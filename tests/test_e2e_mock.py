@@ -43,7 +43,7 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
     asset_dir = Path(plan["asset_dir"])
     asset_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. generate the still image (nsfw on, to exercise the flag through the whole pipeline)
+    # 3. generate the still image -- the SFW variant, which every persona has
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("a friendly test persona", encoding="utf-8")
     image_path = asset_dir / "test-persona.png"
@@ -53,7 +53,6 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
             "scripts/generate_image.py",
             "--backend",
             "mock",
-            "--nsfw",
             "--prompt-file",
             str(prompt_file),
             "--out",
@@ -75,6 +74,29 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
     except ImportError:
         assert actual_image_path.stat().st_size > 0
 
+    # 3b. generate the optional NSFW variant: same seed and base prompt, --nsfw added, so the
+    # two pictures are the same character rather than two different ones.
+    nsfw_image_path = asset_dir / "test-persona-nsfw.png"
+    result = _run(
+        [
+            "scripts/generate_image.py",
+            "--backend",
+            "mock",
+            "--nsfw",
+            "--prompt-file",
+            str(prompt_file),
+            "--seed",
+            str(image_result["seed"]),
+            "--out",
+            str(nsfw_image_path),
+        ],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nsfw_image_result = json.loads(result.stdout)
+    assert Path(nsfw_image_result["path"]).exists()
+    assert nsfw_image_result["seed"] == image_result["seed"]
+
     # 4. generate the gif (synthetic, since mock has no native gif support)
     gif_path = asset_dir / "test-persona.gif"
     result = _run(
@@ -94,16 +116,17 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
     assert gif_result["mode"] == "synthetic"
     assert Path(gif_result["path"]).exists()
 
-    # 5. write the profile -- single image field: the GIF replaces the PNG as `image` since one
-    # was generated (there's no separate animated-image field).
+    # 5. write the profile -- one file per variant: the GIF replaces the PNG as `image` since one
+    # was generated (there's no separate animated-image field), and the NSFW still goes in
+    # `image_nsfw`. Top-level `nsfw` is derived from image_nsfw, so it isn't passed here.
     fields = {
         "schema_version": 1,
         "name": "Test Persona",
         "slug": "test-persona",
         "image": gif_result["path"],
+        "image_nsfw": nsfw_image_result["path"],
         "voice": "jessica",
         "personality": "Warm, direct, curious.",
-        "nsfw": True,
         "generation": {
             "backend": "mock",
             "model": image_result["model"],
@@ -136,7 +159,16 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
     assert Path(write_result["markdown_path"]).exists()
     assert write_result["gitignore_updated"] is True
     assert write_result["image_path"] == gif_result["path"]
+    assert write_result["image_nsfw_path"] == nsfw_image_result["path"]
     assert "gif_path" not in write_result
+
+    # a persona with both pictures starts on the SFW one, with nsfw derived as true
+    profile_text = Path(write_result["markdown_path"]).read_text(encoding="utf-8")
+    assert "nsfw: true" in profile_text
+    assert "variant: sfw" in profile_text
+    assert nsfw_image_result["path"] in profile_text
+    # ...and the visible markdown picture is the SFW one, never the explicit variant
+    assert f"![Test Persona]({gif_result['path']})" in profile_text
 
     gitignore_path = tmp_path / ".gitignore"
     assert gitignore_path.exists()
@@ -174,13 +206,13 @@ def test_private_persona_via_claude_md_ref_leaks_no_identity(tmp_path):
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("a private test persona", encoding="utf-8")
     image_path = asset_dir / "persona.png"
+    nsfw_image_path = asset_dir / "persona-nsfw.png"
 
     result = _run(
         [
             "scripts/generate_image.py",
             "--backend",
             "mock",
-            "--nsfw",
             "--prompt-file",
             str(prompt_file),
             "--out",
@@ -191,12 +223,28 @@ def test_private_persona_via_claude_md_ref_leaks_no_identity(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     image_result = json.loads(result.stdout)
 
+    result = _run(
+        [
+            "scripts/generate_image.py",
+            "--backend",
+            "mock",
+            "--nsfw",
+            "--prompt-file",
+            str(prompt_file),
+            "--out",
+            str(nsfw_image_path),
+        ],
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nsfw_image_result = json.loads(result.stdout)
+
     fields = {
         "schema_version": 1,
         "name": persona_name,
         "slug": "sienna-foxx",
         "image": image_result["path"],
-        "nsfw": True,
+        "image_nsfw": nsfw_image_result["path"],
         "personality": "Wry, private, unmistakably herself.",
         "generation": {
             "backend": "mock",

@@ -46,6 +46,12 @@ Each persona's own `display.image`/`display.name` preference decides what's show
 true/true. --show-image/--no-image and --show-name/--no-name override that for this invocation
 only, without touching the persona's stored preference (see toggle_display.py to change it).
 
+*Which* picture is drawn is `display.variant`: a persona has a SFW picture (`image`) and
+optionally an NSFW one (`image_nsfw`), and that flag says which of the two is currently on
+screen. --variant sfw|nsfw overrides it for this invocation only, the same way --show-image does,
+and asking for a variant the persona has no picture for falls back to the one it does have rather
+than showing nothing (reported as `variant_fell_back` in the JSON). See profilegen/variants.py.
+
 `display.autostart` is a separate question from those: it decides whether a persona appears *on
 its own* at session start, not what gets drawn when it does. It's only consulted under
 --autostart-only, which is what a SessionStart hook passes -- so a persona can be set to stay
@@ -60,7 +66,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from profilegen import discovery, frontmatter, hud, termimg, termstate  # noqa: E402
+from profilegen import discovery, frontmatter, hud, termimg, termstate, variants  # noqa: E402
 
 
 def _load_markdown_fields(markdown_path: Path) -> dict | None:
@@ -84,10 +90,16 @@ def _display_one(fields: dict, root: Path, args: argparse.Namespace, mode: str) 
     show_name = args.show_name if args.show_name is not None else display.get("name", True)
 
     name = fields.get("name")
-    image_path = _resolve_image_path(fields.get("image"), root)
+    # Which of the persona's two pictures to draw: --variant for this invocation only, otherwise
+    # their stored display.variant, falling back to whichever variant they actually have.
+    resolution = variants.resolve(fields, args.variant)
+    image_path = _resolve_image_path(resolution.path, root)
     result = {
         "name": name,
         "mode": mode,
+        "variant": resolution.variant,
+        "requested_variant": resolution.requested,
+        "variant_fell_back": resolution.fell_back,
         "hud": False,
         "badge": False,
         "background": False,
@@ -186,6 +198,13 @@ def main() -> None:
         help="hud inset from the edge, for whichever axis isn't centred",
     )
     parser.add_argument("--width-pct", type=int, default=10, help="inline image width as %% of terminal width")
+    parser.add_argument(
+        "--variant",
+        choices=list(variants.VARIANTS),
+        default=None,
+        help="show this picture variant for this invocation only, ignoring the persona's stored "
+        "display.variant (see toggle_display.py --variant to change what's stored)",
+    )
     parser.add_argument("--show-image", dest="show_image", action="store_true", default=None)
     parser.add_argument("--no-image", dest="show_image", action="store_false")
     parser.add_argument("--show-name", dest="show_name", action="store_true", default=None)

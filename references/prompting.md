@@ -3,6 +3,11 @@
 Read this before drafting the image prompt in SKILL.md step 6, and before writing the
 personality description in step 3 when `nsfw` is set.
 
+One drafted prompt produces both of a persona's pictures. SKILL.md step 7 generates the SFW one
+without `--nsfw`; step 7b re-runs the same prompt, style preset and **seed** with `--nsfw`, and
+`build()` appends the NSFW clause and strips the suppressing negative terms for that call only.
+Reusing the seed is what makes the two pictures the same person rather than two strangers.
+
 ## Image prompt recipe
 
 Build the positive prompt from these pieces, in order:

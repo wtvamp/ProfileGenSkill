@@ -37,17 +37,26 @@ Two modes:
   claude-md      the full rendered profile is embedded directly in CLAUDE.md -- appropriate
                  when the persona itself is meant to be shared/committed as-is.
 
-Fields file required keys: name, slug, image, nsfw, generation.
-Optional keys: voice, personality, display (an {"image": bool, "name": bool, "autostart": bool}
-object -- image/name control whether show_profile.py shows this persona's picture/name at all,
-autostart whether a SessionStart hook shows it automatically, which is a separate question: a
-persona can be available via /display-profile without appearing on its own. All default to true
-when omitted, filled in here before rendering so every written profile has explicit values, even
-one predating a field).
+Fields file required keys: name, slug, image, generation.
+Optional keys: voice, personality, image_nsfw, display (an {"image": bool, "name": bool,
+"autostart": bool, "variant": "sfw"|"nsfw"} object -- image/name control whether show_profile.py
+shows this persona's picture/name at all, autostart whether a SessionStart hook shows it
+automatically, which is a separate question: a persona can be available via /display-profile
+without appearing on its own, and variant which of the persona's two pictures is currently on
+screen. The booleans default to true and variant to "sfw" when omitted, filled in here before
+rendering so every written profile has explicit values, even one predating a field).
 
-There is a single `image` field -- it holds whichever file is the profile's final picture, a
-static PNG or an animated GIF, never both. `generation.gif_mode` says which: null for a plain
-static image, "native"/"synthetic" when `image` is an animated GIF.
+`image` is the persona's SFW picture and `image_nsfw` their optional NSFW one -- the same
+character from the same seed and base prompt, generated a second time with the NSFW clause
+added, so `/display-profile nsfw on|off|toggle` swaps the picture without swapping the persona.
+Top-level `nsfw` is derived here: true exactly when `image_nsfw` is set. Each field holds one
+file, a static PNG or an animated GIF, never both; `generation.gif_mode` says which (null for a
+plain static image, "native"/"synthetic" for a GIF) and describes both variants, since they are
+generated the same way.
+
+The markdown body's visible `![name](...)` picture is always the SFW one, so an NSFW variant is
+never inlined into a tracked CLAUDE.md or a committed profile -- it is referenced by path in the
+frontmatter only, and only the overlay ever draws it.
 """
 from __future__ import annotations
 
@@ -58,9 +67,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from profilegen import render, storage  # noqa: E402
+from profilegen import render, storage, variants  # noqa: E402
 
-REQUIRED_FIELD_KEYS = ("name", "slug", "image", "nsfw", "generation")
+# `nsfw` is deliberately absent: it is derived from image_nsfw rather than supplied.
+REQUIRED_FIELD_KEYS = ("name", "slug", "image", "generation")
 
 
 def _fail(message: str) -> None:
@@ -94,10 +104,24 @@ def _write(args: argparse.Namespace) -> None:
 
     slug = fields.get("slug") or storage.slugify(fields["name"])
     display = fields.get("display") if isinstance(fields.get("display"), dict) else {}
+    image_nsfw = fields.get("image_nsfw") or None
+    if fields.get("nsfw") and not image_nsfw:
+        # Refuse the pre-variant shape rather than relabel an explicit picture as the SFW one:
+        # `image` is now always the safe variant, so an explicit picture belongs in image_nsfw.
+        _fail(
+            "nsfw is true but image_nsfw is unset -- `image` is the SFW picture; put the "
+            "explicit one in `image_nsfw` (nsfw is derived from it)"
+        )
+        return
+    fields["image_nsfw"] = image_nsfw
+    fields["nsfw"] = bool(image_nsfw)
+    requested_variant = variants.normalize(display.get("variant"))
     fields["display"] = {
         "image": display.get("image", True),
         "name": display.get("name", True),
         "autostart": display.get("autostart", True),
+        # never leave a profile pointing at a variant it has no picture for
+        "variant": requested_variant if image_nsfw else variants.SFW,
     }
 
     try:
@@ -138,6 +162,7 @@ def _write(args: argparse.Namespace) -> None:
             {
                 "markdown_path": markdown_path,
                 "image_path": fields.get("image"),
+                "image_nsfw_path": fields.get("image_nsfw"),
                 "gitignore_updated": gitignore_updated,
                 "claude_md_updated": args.output in ("claude-md", "claude-md-ref"),
                 "claude_md_path": claude_md_path,
