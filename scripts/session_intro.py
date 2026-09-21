@@ -26,12 +26,22 @@ These are handed back two ways:
     start, with no user input needed, so there's some visible greeting even before the user types
     anything.
 
+Claude Code *merges* hook definitions from every settings file that applies to a session rather
+than letting the nearest one win, so a project nested under another project that also registers
+this hook fires it twice and the intro is printed twice. `_claim_intro()` makes the script
+idempotent per session: the first invocation for a given `session_id` claims it (via an flock'd
+claim file under ~/.cache/profile-gen/session-intro) and any other invocation arriving within
+DEDUPE_WINDOW_SECONDS emits nothing. The window, rather than a permanent claim, is what keeps a
+later legitimate re-fire of the same session id working -- `/clear` re-runs SessionStart, and
+whether it also mints a new session id is a harness detail this script shouldn't depend on.
+
 Never errors out over a missing persona, a non-git ROOT, or any other lookup failure -- worst
 case it emits nothing rather than blocking the session from starting.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -40,13 +50,98 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from profilegen import discovery  # noqa: E402
 
 FILE_COUNT = 8
+DEDUPE_DIR = Path.home() / ".cache" / "profile-gen" / "session-intro"
+DEDUPE_WINDOW_SECONDS = 30.0
+CLAIM_TTL_SECONDS = 86400.0
 SKIP_DIR_NAMES = {"node_modules", "__pycache__", "dist", "build", "venv", "env"}
 WALK_TIME_BUDGET_SECONDS = 1.5
+
+
+def _read_hook_payload() -> dict:
+    """The JSON hook input Claude Code writes on stdin, or {} when there isn't any.
+
+    Skipped entirely when stdin is a terminal, so running this script by hand doesn't hang
+    waiting on input that will never arrive."""
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return {}
+        raw = sys.stdin.read()
+    except (OSError, ValueError):
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _prune_claims(now: float) -> None:
+    try:
+        for claim in DEDUPE_DIR.glob("*.claim"):
+            try:
+                if now - claim.stat().st_mtime > CLAIM_TTL_SECONDS:
+                    claim.unlink()
+            except OSError:
+                continue
+    except OSError:
+        return
+
+
+def _claim_intro(session_id: str | None, now: float | None = None) -> bool:
+    """Whether *this* invocation should emit the intro for `session_id`.
+
+    True for the first caller in a session and False for anyone arriving within
+    DEDUPE_WINDOW_SECONDS after it -- which is what stops a hook registered in both a project's
+    and an ancestor project's settings.json from introducing the persona twice. The claim is
+    keyed on session_id alone, not on --root, because the duplicate invocations may well pass
+    different roots (a nested project's settings file can hardcode its own).
+
+    Any failure to take the claim (no session_id, unwritable cache dir, no flock) returns True:
+    a duplicated intro is cosmetic, a missing one is the feature not working.
+    """
+    if not session_id:
+        return True
+    now = time.time() if now is None else now
+    key = hashlib.sha256(str(session_id).encode("utf-8")).hexdigest()[:32]
+    try:
+        DEDUPE_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(DEDUPE_DIR / f"{key}.claim"), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return True
+    try:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                pass
+        try:
+            claimed_at = float(os.read(fd, 64).decode("utf-8", "replace").strip() or 0)
+        except (OSError, ValueError):
+            claimed_at = 0.0
+        if 0 <= now - claimed_at < DEDUPE_WINDOW_SECONDS:
+            return False
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, repr(now).encode("utf-8"))
+        except OSError:
+            return True
+        return True
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _personality_section(markdown_path: Path) -> str | None:
@@ -205,6 +300,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="project root to inspect")
     args = parser.parse_args()
+
+    payload = _read_hook_payload()
+    now = time.time()
+    if not _claim_intro(payload.get("session_id"), now):
+        return 0
+    _prune_claims(now)
 
     root = Path(args.root)
     personas = discovery.discover_personas(root)

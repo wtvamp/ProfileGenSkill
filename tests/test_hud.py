@@ -1,3 +1,4 @@
+import re
 import subprocess
 import types
 import sys
@@ -492,3 +493,96 @@ def test_launch_passes_custom_avatar_bounds(monkeypatch, tmp_path):
     args = captured["args"]
     assert args[args.index("--avatar") + 1] == "160"
     assert args[args.index("--avatar-min") + 1] == "64"
+
+
+def test_launch_puts_the_overlay_at_top_centre_by_default(monkeypatch, tmp_path):
+    """The badge sits at the top centre of its pane, not pinned to a corner.
+
+    A corner lands on the terminal's own furniture -- scrollbar, resize grip, the tail of long
+    output -- and has nowhere to move when it collides with it.
+    """
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    args = captured["args"]
+    assert args[args.index("--position") + 1] == "tc" == hud.DEFAULT_POSITION
+    assert "--corner" not in args
+
+
+def test_launch_passes_a_corner_position_through(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+
+    captured = {}
+
+    class FakeProcess:
+        pid = 1
+
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda args, **kw: (captured.update(args=args), FakeProcess())[1]
+    )
+    assert hud.launch("/tmp/p.png", "Ada", position="bl") is True
+    assert captured["args"][captured["args"].index("--position") + 1] == "bl"
+
+
+HUD_DIR = Path(__file__).resolve().parent.parent / "scripts" / "hud"
+
+
+def _swift_source() -> str:
+    return (HUD_DIR / "PersonaHUD.swift").read_text()
+
+
+def _windows_source() -> str:
+    return (HUD_DIR / "persona_hud.py").read_text()
+
+
+def test_badge_proportions_match_across_platforms():
+    """The macOS and Windows overlays draw the same badge, so they must agree on its proportions.
+
+    Nothing at runtime couples them -- one is Swift, the other Python -- so a number tuned in one
+    file and not the other is a silent divergence that only shows up as "it looks different on my
+    machine". Reading both files is the only place that can be caught.
+    """
+    swift, windows = _swift_source(), _windows_source()
+    for swift_name, python_name in [
+        ("tileRadiusFraction", "TILE_RADIUS_FRACTION"),
+        ("paddingFraction", "PADDING_FRACTION"),
+        ("trailingPaddingFraction", "TRAILING_PADDING_FRACTION"),
+        ("gapFraction", "GAP_FRACTION"),
+        ("fontFraction", "FONT_FRACTION"),
+        ("avatarWidthFraction", "AVATAR_WIDTH_FRACTION"),
+        ("avatarHeightFraction", "AVATAR_HEIGHT_FRACTION"),
+    ]:
+        swift_value = re.search(
+            rf"static let {swift_name}: CGFloat = ([\d.]+)", swift
+        )
+        python_value = re.search(rf"^{python_name} = ([\d.]+)$", windows, re.MULTILINE)
+        assert swift_value, f"{swift_name} not found in PersonaHUD.swift"
+        assert python_value, f"{python_name} not found in persona_hud.py"
+        assert float(swift_value.group(1)) == float(python_value.group(1)), swift_name
+
+
+def test_card_radius_is_concentric_with_the_tile():
+    """The card's corner radius is the tile's plus the padding between them.
+
+    That's what keeps the two curves parallel; deriving the card's radius from its own height
+    instead is what turns a short badge into a pill.
+    """
+    swift = _swift_source()
+    assert "tileRadius(forAvatar: avatar) + padding(forAvatar: avatar)" in swift
+    assert 'Card(width, height, m["radius"] + m["pad"])' in _windows_source()

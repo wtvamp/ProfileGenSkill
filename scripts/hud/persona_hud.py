@@ -2,9 +2,10 @@
 """PersonaHUD for Windows -- the tkinter/ctypes counterpart to PersonaHUD.swift.
 
 Same idea and the same flags as the macOS overlay: a small always-on-top, click-through window
-pinned to a corner of the terminal window, showing the persona's picture and name. It's a surface
-we own outright, so it consumes no terminal rows, touches no user configuration, and needs no
-terminal image protocol -- which is what makes it work regardless of terminal or multiplexer.
+floating over the terminal window (top centre of the pane by default), showing the persona's picture
+with its name to the right. It's a surface we own outright, so it consumes no terminal rows,
+touches no user configuration, and needs no terminal image protocol -- which is what makes it work
+regardless of terminal or multiplexer.
 
 Uses only the standard library (tkinter + ctypes). Pillow is used when present for a circular
 avatar and smooth GIF frames, and there's a plain-tkinter fallback (square avatar, GIF animated
@@ -25,6 +26,10 @@ from ctypes import wintypes
 
 TRANSPARENT_KEY = "#010203"  # a colour the artwork is very unlikely to contain
 
+
+def _hex(rgb: tuple[int, int, int]) -> str:
+    return "#%02x%02x%02x" % rgb
+
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
@@ -33,14 +38,42 @@ WS_EX_TOOLWINDOW = 0x00000080
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-# The orb is sized off the pinned area's width first (text runs horizontally, so that's what a
-# too-big orb covers), with the height term only biting on short, wide panes. Same constants as
+# The tile is sized off the pinned area's width first (text runs horizontally, so that's what a
+# too-big badge covers), with the height term only biting on short, wide panes. Same constants as
 # PersonaHUD.swift, so the two platforms size identically for the same pane.
-AVATAR_WIDTH_FRACTION = 0.12
-AVATAR_HEIGHT_FRACTION = 0.3
-# Orb sizes are snapped to this step so dragging a pane edge doesn't re-decode the GIF on every
+AVATAR_WIDTH_FRACTION = 0.05
+AVATAR_HEIGHT_FRACTION = 0.15
+# Tile sizes are snapped to this step so dragging a pane edge doesn't re-decode the GIF on every
 # pixel of movement; frames are cached per snapped size.
 AVATAR_STEP = 4
+
+# Badge proportions, all fractions of the picture tile's side so the badge looks the same at every
+# size. Same numbers as PersonaHUD.swift -- see its HUDView docstring for the reasoning behind the
+# card, the rounded square and the strip layout.
+TILE_RADIUS_FRACTION = 0.22
+PADDING_FRACTION = 0.13
+TRAILING_PADDING_FRACTION = 0.2
+GAP_FRACTION = 0.16
+FONT_FRACTION = 0.24
+
+# The card. Windows' `-transparentcolor` is a colour key, not an alpha channel, so a pixel is
+# either fully opaque or fully gone -- the translucent blurred card the macOS overlay draws isn't
+# available here, and this is a flat dark fill instead. Corners and border still come out right,
+# since those only need per-pixel *keying*, which is exactly what the key colour gives.
+CARD_FILL = (26, 26, 30)
+CARD_BORDER = (78, 78, 86)
+
+
+def _badge_metrics(tile: int) -> dict[str, int]:
+    """Every derived measurement for a badge built around a tile of this side."""
+    return {
+        "tile": tile,
+        "radius": round(tile * TILE_RADIUS_FRACTION),
+        "pad": max(5, round(tile * PADDING_FRACTION)),
+        "trailing": max(9, round(tile * TRAILING_PADDING_FRACTION)),
+        "gap": max(6, round(tile * GAP_FRACTION)),
+        "font": max(8, round(tile * FONT_FRACTION)),
+    }
 
 DEFAULT_OWNERS = (
     "windowsterminal.exe", "wt.exe", "conhost.exe", "openconsole.exe",
@@ -57,11 +90,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="")
     parser.add_argument("--name", default="")
-    # `--avatar` is the orb's diameter for a roomy pane and `--avatar-min` its floor; the actual
-    # size is derived every tick from the area the overlay is pinned to (see HUD._fit_to).
-    parser.add_argument("--avatar", type=int, default=104)
-    parser.add_argument("--avatar-min", type=int, default=40)
-    parser.add_argument("--corner", default="tr", choices=["tr", "tl", "br", "bl"])
+    # `--avatar` is the picture tile's side for a roomy pane and `--avatar-min` its floor; the
+    # actual size is derived every tick from the area the overlay is pinned to (see HUD._fit_to).
+    parser.add_argument("--avatar", type=int, default=48)
+    parser.add_argument("--avatar-min", type=int, default=26)
+    # --corner is the old spelling of --position, kept working so an existing invocation (or an
+    # older profilegen/hud.py) doesn't break.
+    parser.add_argument(
+        "--position", "--corner", dest="position", default="tc",
+        choices=["tc", "c", "bc", "tr", "tl", "br", "bl"],
+    )
     parser.add_argument("--margin", type=int, default=36)
     parser.add_argument("--owner", default="", help="comma-separated terminal process names")
     parser.add_argument("--tmux-pane", default="")
@@ -172,7 +210,11 @@ def _tmux_pane_geometry(pane: str, tmux_bin: str):
 
 
 class AvatarFrames:
-    """Prepared avatar frames plus their durations, circular-masked where Pillow is available."""
+    """Prepared picture frames plus their durations, rounded-square where Pillow is available.
+
+    A square keeps the whole frame of the generated portrait where a circle would crop its corners
+    off, and its rounded corners echo the card's -- see PersonaHUD.swift's HUDView docstring.
+    """
 
     def __init__(self, path: str, size: int):
         self.frames: list[tk.PhotoImage] = []
@@ -185,24 +227,30 @@ class AvatarFrames:
             self._load_with_tk(path)
 
     def _load_with_pillow(self, path: str, size: int) -> None:
+        radius = round(size * TILE_RADIUS_FRACTION)
         mask = Image.new("L", (size, size), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius, fill=255)
         with Image.open(path) as src:
             for frame in ImageSequence.Iterator(src):
                 rgba = frame.convert("RGBA")
                 side = min(rgba.size)
+                # Centre-crop to a square before scaling: resizing a 16:9 portrait straight into
+                # a square tile visibly widens the face.
                 rgba = rgba.crop((
                     (rgba.width - side) // 2, (rgba.height - side) // 2,
                     (rgba.width + side) // 2, (rgba.height + side) // 2,
                 )).resize((size, size), Image.LANCZOS)
-                # composite onto the transparency key so the circle's corners drop out
-                canvas = Image.new("RGB", (size, size), TRANSPARENT_KEY)
+                # composite onto the card's own fill, not the transparency key: the tile sits on
+                # the card, so its rounded corners should reveal the card rather than punch a hole
+                # straight through the badge.
+                canvas = Image.new("RGB", (size, size), CARD_FILL)
                 canvas.paste(rgba, (0, 0), mask)
                 self.frames.append(ImageTk.PhotoImage(canvas))
                 self.durations.append(max(20, frame.info.get("duration", 100)))
 
     def _load_with_tk(self, path: str) -> None:
-        # tkinter reads GIF frames by index and PNGs directly; no masking, so the avatar is square.
+        # tkinter reads GIF frames by index and PNGs directly; no masking, so without Pillow the
+        # tile's corners stay sharp.
         index = 0
         while True:
             try:
@@ -219,6 +267,24 @@ class AvatarFrames:
                 pass
 
 
+class Card:
+    """The rounded dark plate the tile and the name sit on, as a keyed tkinter image.
+
+    Pillow draws it; without Pillow there's no way to key out the corners, so `image` is None and
+    the badge falls back to a plain rectangular canvas of the same fill.
+    """
+
+    def __init__(self, width: int, height: int, radius: int):
+        self.image = None
+        if Image is None or width <= 0 or height <= 0:
+            return
+        plate = Image.new("RGB", (width, height), TRANSPARENT_KEY)
+        ImageDraw.Draw(plate).rounded_rectangle(
+            (0, 0, width - 1, height - 1), radius, fill=CARD_FILL, outline=CARD_BORDER, width=1,
+        )
+        self.image = ImageTk.PhotoImage(plate)
+
+
 class HUD:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -233,39 +299,45 @@ class HUD:
         self.root.attributes("-transparentcolor", TRANSPARENT_KEY)
         self.root.withdraw()
 
-        # Frames are prepared per orb size and cached, so a pane that keeps flipping between two
+        # One canvas holds the whole badge -- card, tile and name as three stacked items. Packing
+        # separate widgets was the obvious alternative and can't work here: a widget's background
+        # is a solid rectangle, so the card's rounded corners would be squared off again by
+        # whatever sat on top of them.
+        self.canvas = tk.Canvas(
+            self.root, bd=0, highlightthickness=0, bg=TRANSPARENT_KEY,
+        )
+        self.canvas.pack()
+        self.card_item = self.canvas.create_image(0, 0, anchor="nw")
+        self.card_rect = self.canvas.create_rectangle(
+            0, 0, 0, 0, fill=_hex(CARD_FILL), outline=_hex(CARD_BORDER), state="hidden",
+        )
+        self.image_item = self.canvas.create_image(0, 0, anchor="nw")
+        # Two offset text items fake a drop shadow, so the name stays legible even where the card
+        # is sitting over something bright.
+        self.shadow_item = self.canvas.create_text(0, 0, anchor="w", fill="#000000", text=args.name)
+        self.text_item = self.canvas.create_text(0, 0, anchor="w", fill="#ffffff", text=args.name)
+
+        # Frames are prepared per tile size and cached, so a pane that keeps flipping between two
         # sizes doesn't keep re-decoding the GIF. Starts at the maximum; the first tick fits it.
         self._frames_by_size: dict[int, AvatarFrames] = {}
+        self._card_by_size: dict[int, Card] = {}
         self.avatar_size = 0
         self.avatar = AvatarFrames("", 0)
+        self.card = Card(0, 0, 0)
         self.frame_index = 0
-        self.image_label: tk.Label | None = None
-        self.name_labels: list[tk.Label] = []
-
-        if args.image:
-            self.image_label = tk.Label(self.root, bd=0, bg=TRANSPARENT_KEY)
-            self.image_label.pack()
-
-        if args.name:
-            # two offset labels fake a drop shadow, so the name stays legible over any background
-            holder = tk.Frame(self.root, bg=TRANSPARENT_KEY)
-            holder.pack(fill="x")
-            shadow = tk.Label(holder, text=args.name, bd=0, bg=TRANSPARENT_KEY, fg="#000000")
-            shadow.place(x=1, y=1, relwidth=1, anchor="nw")
-            face = tk.Label(holder, text=args.name, bd=0, bg=TRANSPARENT_KEY, fg="#ffffff")
-            face.pack(fill="x")
-            self.name_labels = [shadow, face]
 
         self._fit_to(args.avatar)
         self._apply_click_through()
 
     def _fit_to(self, avatar: int) -> None:
-        """Re-fit the orb and its label to a new diameter (no-op when unchanged)."""
+        """Re-fit the whole badge -- card, tile, name -- to a new tile size (no-op if unchanged)."""
         avatar = max(AVATAR_STEP, int(round(avatar / AVATAR_STEP)) * AVATAR_STEP)
         if avatar == self.avatar_size:
             return
         self.avatar_size = avatar
-        if self.image_label is not None:
+        m = _badge_metrics(avatar)
+
+        if self.args.image:
             if avatar not in self._frames_by_size:
                 if len(self._frames_by_size) >= 12:
                     self._frames_by_size.clear()
@@ -273,14 +345,50 @@ class HUD:
             self.avatar = self._frames_by_size[avatar]
             self.frame_index = 0
             if self.avatar.frames:
-                self.image_label.configure(image=self.avatar.frames[0])
-        font = ("Segoe UI", max(8, round(avatar * 10 / 104)), "bold")
-        for label in self.name_labels:
-            label.configure(font=font)
+                self.canvas.itemconfigure(self.image_item, image=self.avatar.frames[0])
+
+        font = ("Segoe UI", m["font"], "bold")
+        for item in (self.shadow_item, self.text_item):
+            self.canvas.itemconfigure(item, font=font)
+
+        tile_width = m["tile"] if self.args.image else 0
+        text_width = 0
+        if self.args.name:
+            # after the font change has been applied, or the bbox is the previous size's
+            self.root.update_idletasks()
+            bbox = self.canvas.bbox(self.text_item)
+            text_width = (bbox[2] - bbox[0]) if bbox else 0
+
+        height = m["tile"] + 2 * m["pad"]
+        if self.args.name:
+            width = m["pad"] + tile_width + m["gap"] + text_width + m["trailing"]
+        else:
+            width = tile_width + 2 * m["pad"]
+        self.canvas.configure(width=width, height=height)
+
+        if avatar not in self._card_by_size:
+            if len(self._card_by_size) >= 12:
+                self._card_by_size.clear()
+            self._card_by_size[avatar] = Card(width, height, m["radius"] + m["pad"])
+        self.card = self._card_by_size[avatar]
+        if self.card.image is not None:
+            self.canvas.itemconfigure(self.card_item, image=self.card.image)
+        else:
+            # No Pillow: a square plate, since keying out rounded corners needs per-pixel work.
+            self.canvas.coords(self.card_rect, 0, 0, width - 1, height - 1)
+            self.canvas.itemconfigure(self.card_rect, state="normal")
+
+        self.canvas.coords(self.image_item, m["pad"], m["pad"])
+        text_x = m["pad"] + tile_width + (m["gap"] if self.args.image else 0)
+        self.canvas.coords(self.text_item, text_x, height / 2)
+        self.canvas.coords(self.shadow_item, text_x + 1, height / 2 + 1)
+        self.canvas.tag_raise(self.image_item)
+        self.canvas.tag_raise(self.shadow_item)
+        self.canvas.tag_raise(self.text_item)
         self.root.update_idletasks()
 
     def _avatar_size_for(self, width: float, height: float) -> int:
-        """Orb diameter for a pinned area of this size, clamped to [--avatar-min, --avatar] so it
+        """Tile side for a pinned area of this size, clamped to [--avatar-min, --avatar] so it
         neither vanishes nor outgrows the configured size."""
         wanted = min(width * AVATAR_WIDTH_FRACTION, height * AVATAR_HEIGHT_FRACTION)
         return int(round(min(self.args.avatar, max(self.args.avatar_min, wanted))))
@@ -292,9 +400,9 @@ class HUD:
         ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, styles)
 
     def _animate(self) -> None:
-        if len(self.avatar.frames) > 1 and self.image_label is not None:
+        if len(self.avatar.frames) > 1:
             self.frame_index = (self.frame_index + 1) % len(self.avatar.frames)
-            self.image_label.configure(image=self.avatar.frames[self.frame_index])
+            self.canvas.itemconfigure(self.image_item, image=self.avatar.frames[self.frame_index])
             delay = self.avatar.durations[self.frame_index]
         else:
             delay = 500
@@ -323,15 +431,27 @@ class HUD:
             left, right = left + fx0 * width, left + fx1 * width
             top, bottom = top + fy0 * height, top + fy1 * height
 
-        # Size to the pane (or window) before placing, so the corner offset uses the new size.
+        # Size to the pane (or window) before placing, so the offset uses the new size.
         self._fit_to(self._avatar_size_for(right - left, bottom - top))
 
         w = self.root.winfo_width()
         h = self.root.winfo_height()
-        # The inset scales with the orb, same as the macOS overlay.
+        # Each axis is independently centred or inset from an edge, same as the macOS overlay;
+        # a centred axis ignores the margin, since there's no edge to inset from.
+        position = self.args.position
         m = max(8, round(self.args.margin * self.avatar_size / max(self.args.avatar, 1)))
-        x = left + m if self.args.corner.endswith("l") else right - w - m
-        y = top + m if self.args.corner.startswith("t") else bottom - h - m
+        if position.endswith("l"):
+            x = left + m
+        elif position.endswith("r"):
+            x = right - w - m
+        else:
+            x = (left + right - w) / 2
+        if len(position) > 1 and position.startswith("t"):
+            y = top + m
+        elif len(position) > 1 and position.startswith("b"):
+            y = bottom - h - m
+        else:
+            y = (top + bottom - h) / 2
         self.root.geometry(f"+{int(x)}+{int(y)}")
         self.root.deiconify()
         self.root.attributes("-topmost", True)
