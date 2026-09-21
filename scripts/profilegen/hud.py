@@ -1,7 +1,8 @@
 """Build/launch/stop the PersonaHUD overlay window (macOS).
 
-The HUD is a small always-on-top, click-through window pinned to a corner of the terminal window
--- see `scripts/hud/PersonaHUD.swift` for why an overlay rather than anything terminal-native:
+The HUD is a small always-on-top, click-through window floating over the terminal window -- an
+orb with the persona's name beside it, at the top centre of its tmux pane by default. See
+`scripts/hud/PersonaHUD.swift` for why an overlay rather than anything terminal-native:
 inline images die under tmux, and iTerm2's background image is a *user-owned setting* that a
 feature has no business appropriating. An overlay is a surface we own: no terminal rows consumed,
 no user configuration touched, no dependence on terminal image protocols, and animated GIF
@@ -26,13 +27,17 @@ HUD_DIR = Path(__file__).resolve().parent.parent / "hud"
 SOURCE = HUD_DIR / "PersonaHUD.swift"
 WINDOWS_SOURCE = HUD_DIR / "persona_hud.py"
 
-# The orb's diameter for a roomy pane, and its floor. The overlay derives the actual size on every
+# The picture tile's side for a roomy pane, and its floor (the card's padding sits outside it). The overlay derives the actual size on every
 # tick from the area it's pinned to (the tmux pane, or the whole terminal window outside tmux), so
-# a narrow sidebar pane gets a proportionally smaller orb instead of one that covers half its
+# a narrow sidebar pane gets a proportionally smaller badge instead of one that covers half its
 # text; these two just bound that.
-DEFAULT_AVATAR = 104
-DEFAULT_AVATAR_MIN = 40
-DEFAULT_CORNER = "tr"
+DEFAULT_AVATAR = 48
+DEFAULT_AVATAR_MIN = 26
+# Top centre of the pane rather than a corner: the corners are where the terminal's own furniture
+# lives (scrollbar, resize grip, the tail of long output) and a badge parked in one has nowhere to
+# move when it collides with that. The top edge is where output is oldest, so it's the least
+# intrusive band to sit in. "tc", "c", "bc", or one of tl/tr/bl/br.
+DEFAULT_POSITION = "tc"
 DEFAULT_MARGIN = 36
 
 
@@ -317,7 +322,7 @@ def launch(
     image_path: str | None,
     name: str | None,
     avatar: int = DEFAULT_AVATAR,
-    corner: str = DEFAULT_CORNER,
+    position: str = DEFAULT_POSITION,
     margin: int = DEFAULT_MARGIN,
     avatar_min: int = DEFAULT_AVATAR_MIN,
 ) -> bool:
@@ -337,7 +342,7 @@ def launch(
     else:
         args = [str(binary)]
     args += ["--avatar", str(avatar), "--avatar-min", str(avatar_min),
-             "--corner", corner, "--margin", str(margin)]
+             "--position", position, "--margin", str(margin)]
     if image_path:
         args += ["--image", str(image_path)]
     if name:

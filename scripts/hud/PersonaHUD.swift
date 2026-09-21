@@ -1,4 +1,4 @@
-// PersonaHUD -- a small always-on-top avatar + name pinned to a corner of the terminal window.
+// PersonaHUD -- a small always-on-top avatar + name floating over the terminal window.
 //
 // Why a separate window rather than anything terminal-native: every in-terminal channel either
 // fails or isn't ours to take. Inline images die inside tmux (tmux's screen model tracks only text
@@ -19,11 +19,17 @@ struct Options {
     // Upper and lower bounds on the orb's diameter. The actual size is derived on every tick
     // from the area the overlay is pinned to (the tmux pane, or the whole terminal window when
     // not under tmux) -- see Controller.avatarSize(for:) -- so a narrow pane gets a smaller orb
-    // than a wide one instead of every pane wearing the same fixed 104 pt disc regardless of how
-    // much of it that covers. `avatar` is therefore the size for a roomy pane, not *the* size.
-    var avatar: CGFloat = 104
-    var avatarMin: CGFloat = 40
-    var corner = "tr"
+    // than a wide one instead of every pane wearing the same fixed disc regardless of how much
+    // of it that covers. `avatar` is therefore the size for a roomy pane, not *the* size.
+    var avatar: CGFloat = 48
+    var avatarMin: CGFloat = 26
+    // Where in the pinned area the badge sits, as <vertical><horizontal>: "tc" (top centre, the
+    // default), "c" (dead centre), or any of tl/tr/bl/br/bc. Horizontally centred is the default
+    // because the corners are where the terminal's own furniture lives -- scrollbar, resize grip,
+    // the tail of long output -- and a badge parked in one has nowhere to move when it collides
+    // with that. The top edge is where a pane's output is oldest and least likely to be the line
+    // being read, which is what makes it less intrusive than dead centre.
+    var position = "tc"
     var margin: CGFloat = 16
     var ownerName = "iTerm2"
     // The tmux pane this persona belongs to. Several tmux windows share one iTerm2 window, so
@@ -51,9 +57,10 @@ func parseArgs() -> Options {
         switch flag {
         case "--image": o.imagePath = value()
         case "--name": o.name = value()
-        case "--avatar": o.avatar = CGFloat(Double(value()) ?? 104)
-        case "--avatar-min": o.avatarMin = CGFloat(Double(value()) ?? 40)
-        case "--corner": o.corner = value()
+        case "--avatar": o.avatar = CGFloat(Double(value()) ?? 48)
+        case "--avatar-min": o.avatarMin = CGFloat(Double(value()) ?? 26)
+        // --corner is the old spelling, kept working so an existing invocation doesn't break.
+        case "--position", "--corner": o.position = value()
         case "--margin": o.margin = CGFloat(Double(value()) ?? 16)
         case "--owner": o.ownerName = value()
         case "--tmux-pane": o.tmuxPane = value()
@@ -66,65 +73,193 @@ func parseArgs() -> Options {
     return o
 }
 
+/// The badge: a rounded-square picture tile and the persona's name, sitting together on a small
+/// translucent card.
+///
+/// Three deliberate choices, all in service of "readable over arbitrary terminal output without
+/// shouting":
+///
+///  - **A card behind everything.** Terminal output is high-contrast text in unpredictable
+///    colours, and white text floating directly on it is illegible about half the time. The card
+///    gives the name a consistent surface to sit on and makes the picture and the name read as one
+///    object rather than two floating fragments. It's a blurred backdrop (`NSVisualEffectView`)
+///    under a dark scrim: the blur keeps it from looking like a flat slab pasted over the
+///    terminal, and the scrim is what stops it tinting -- vibrancy alone over a green diff hunk
+///    turns the whole card olive, and the one thing this surface has to be is the same colour
+///    every time, whatever it happens to be covering.
+///  - **A rounded square, not a circle.** A square tile keeps the whole frame of the generated
+///    portrait -- a circle crops the corners off a composition that was never framed for it -- and
+///    it echoes the card's own rounded rectangle, so the two shapes agree. The radius is ~22% of
+///    the side, the same ratio macOS uses for app icons, which reads as intentional where a sharp
+///    square reads as unstyled. A picture that isn't square is *centre-cropped* to fill the tile,
+///    never scaled to fit it: scaling a 16:9 portrait into a square visibly widens the face, and a
+///    squashed persona is worse than a tightly framed one.
+///  - **A strip, not a stack.** Name to the right of the tile, vertically centred against it: a
+///    strip covers one or two lines of output where a stack covers several.
 final class HUDView: NSView {
     let name: String
     private(set) var avatar: CGFloat
     private let imageView: NSImageView?
+    /// The tile clips the picture; the picture itself is laid out *larger* than the tile on its
+    /// long axis and centred, which is what crops a non-square portrait instead of squashing it.
+    /// Clipping and scaling have to be two views to do that -- one view can only fit or stretch.
+    private let tile = NSView()
+    /// Width / height of the source picture, 1 when there isn't one.
+    private let imageAspect: CGFloat
+    private let label: NSTextField?
+    private let shadowHost = NSView()
+    private let backdrop = NSVisualEffectView()
+    private let scrim = NSView()
 
-    /// Label height and font track the avatar, so a small orb isn't topped by a name block sized
-    /// for a large one; both floor out where the text would stop being legible.
-    static func labelHeight(forAvatar avatar: CGFloat, name: String) -> CGFloat {
-        name.isEmpty ? 0 : max(14, (avatar * 20 / 104).rounded())
+    // Every measurement is a fraction of the tile's side, so the badge looks identical at any
+    // size -- the overlay rescales itself to its pane, and proportions that only work at one size
+    // would fall apart at the others.
+    /// persona_hud.py carries the same five fractions, and tests/test_hud.py reads both files to
+    /// check they still agree -- two implementations of one badge only look like one badge for as
+    /// long as nobody tunes a number in a single place.
+    static let tileRadiusFraction: CGFloat = 0.22
+    static let paddingFraction: CGFloat = 0.13
+    static let trailingPaddingFraction: CGFloat = 0.2
+    static let gapFraction: CGFloat = 0.16
+    static let fontFraction: CGFloat = 0.24
+
+    static func padding(forAvatar avatar: CGFloat) -> CGFloat {
+        max(5, (avatar * paddingFraction).rounded())
+    }
+    /// Trailing padding runs wider than the rest: text has its own optical sidebearing, so an
+    /// equal measurement looks tight after the name.
+    static func trailingPadding(forAvatar avatar: CGFloat) -> CGFloat {
+        max(9, (avatar * trailingPaddingFraction).rounded())
+    }
+    static func gap(forAvatar avatar: CGFloat) -> CGFloat {
+        max(6, (avatar * gapFraction).rounded())
+    }
+    static func tileRadius(forAvatar avatar: CGFloat) -> CGFloat {
+        (avatar * tileRadiusFraction).rounded()
+    }
+    /// Concentric with the tile's corners: the card's radius is the tile's plus the padding
+    /// between them, which is what makes the two curves stay parallel instead of the outer one
+    /// bulging away from the inner. Picking the card's radius off its own height instead is what
+    /// turns a short badge into a pill.
+    static func cardRadius(forAvatar avatar: CGFloat) -> CGFloat {
+        tileRadius(forAvatar: avatar) + padding(forAvatar: avatar)
     }
 
     static func fontSize(forAvatar avatar: CGFloat) -> CGFloat {
-        max(9, (avatar * 12 / 104).rounded())
+        max(10, (avatar * fontFraction).rounded())
     }
 
     static func font(forAvatar avatar: CGFloat) -> NSFont {
         NSFont.systemFont(ofSize: fontSize(forAvatar: avatar), weight: .semibold)
     }
 
-    /// Wide enough for the orb *and* the name, so a long name under a small orb isn't clipped to
-    /// whatever fits above the disc.
-    static func size(forAvatar avatar: CGFloat, name: String) -> NSSize {
-        var width = avatar
-        if !name.isEmpty {
-            let text = NSAttributedString(string: name, attributes: [.font: font(forAvatar: avatar)])
-            width = max(width, ceil(text.size().width) + 8)
-        }
-        return NSSize(width: width, height: avatar + labelHeight(forAvatar: avatar, name: name))
+    static func textSize(forAvatar avatar: CGFloat, name: String) -> NSSize {
+        guard !name.isEmpty else { return .zero }
+        let text = NSAttributedString(string: name, attributes: [.font: font(forAvatar: avatar)])
+        let size = text.size()
+        return NSSize(width: ceil(size.width), height: ceil(size.height))
     }
 
-    /// The avatar is an NSImageView rather than a manual `image.draw(in:)` specifically so an
+    /// Padding, tile, gap, the full name, trailing padding -- wide enough that a long name is
+    /// never clipped.
+    static func size(forAvatar avatar: CGFloat, name: String) -> NSSize {
+        let pad = padding(forAvatar: avatar)
+        var width = avatar + 2 * pad
+        if !name.isEmpty {
+            width = pad + avatar + gap(forAvatar: avatar)
+                + textSize(forAvatar: avatar, name: name).width
+                + trailingPadding(forAvatar: avatar)
+        }
+        return NSSize(width: width, height: avatar + 2 * pad)
+    }
+
+    /// The picture is an NSImageView rather than a manual `image.draw(in:)` specifically so an
     /// animated GIF persona actually animates -- drawing an NSImage by hand only ever renders its
-    /// first frame. Circular masking is done on the view's layer so it applies to every frame.
+    /// first frame. Rounding is done on the view's layer so it applies to every frame.
     init(image: NSImage?, name: String, avatar: CGFloat) {
         self.name = name
         self.avatar = avatar
+
         if let image = image {
             let imageView = NSImageView(frame: .zero)
             imageView.image = image
             imageView.animates = true
-            imageView.imageScaling = .scaleProportionallyUpOrDown
-            imageView.wantsLayer = true
-            imageView.layer?.masksToBounds = true
-            imageView.layer?.borderWidth = 1.5
-            imageView.layer?.borderColor = NSColor(white: 1, alpha: 0.55).cgColor
+            // The frame place() gives this view already carries the picture's aspect ratio, so
+            // filling it exactly is what preserves the proportions -- the crop comes from the
+            // tile clipping the overflow, not from the scaling.
+            imageView.imageScaling = .scaleAxesIndependently
             self.imageView = imageView
+            let size = image.size
+            imageAspect = size.height > 0 ? size.width / size.height : 1
         } else {
             self.imageView = nil
+            imageAspect = 1
         }
+
+        if name.isEmpty {
+            self.label = nil
+        } else {
+            let field = NSTextField(labelWithString: name)
+            field.textColor = .white
+            field.isBezeled = false
+            field.drawsBackground = false
+            field.isEditable = false
+            field.isSelectable = false
+            // The card carries most of the legibility, but a card over a bright patch of output
+            // is still bright -- the shadow is what keeps the name readable in that case.
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.65)
+            shadow.shadowBlurRadius = 3
+            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            field.shadow = shadow
+            self.label = field
+        }
+
         super.init(frame: NSRect(origin: .zero, size: Self.size(forAvatar: avatar, name: name)))
-        if let imageView = imageView { addSubview(imageView) }
+
+        // The card is built as a masked backdrop inside an unmasked host: the mask that rounds the
+        // card's corners would clip its own shadow away if both lived on one layer.
+        shadowHost.wantsLayer = true
+        shadowHost.layer?.masksToBounds = false
+        shadowHost.layer?.shadowColor = NSColor.black.cgColor
+        shadowHost.layer?.shadowOpacity = 0.32
+        shadowHost.layer?.shadowRadius = 8
+        shadowHost.layer?.shadowOffset = CGSize(width: 0, height: -2)
+
+        backdrop.material = .hudWindow
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .active
+        backdrop.wantsLayer = true
+        backdrop.layer?.masksToBounds = true
+        backdrop.layer?.borderWidth = 1
+        backdrop.layer?.borderColor = NSColor(white: 1, alpha: 0.16).cgColor
+
+        scrim.wantsLayer = true
+        scrim.layer?.backgroundColor = NSColor(white: 0.05, alpha: 0.74).cgColor
+
+        backdrop.addSubview(scrim)
+        tile.wantsLayer = true
+        tile.layer?.masksToBounds = true
+        // A hairline inner edge, not a ring: it separates the picture from the card without
+        // becoming a feature of its own.
+        tile.layer?.borderWidth = 1
+        tile.layer?.borderColor = NSColor(white: 1, alpha: 0.22).cgColor
+
+        shadowHost.addSubview(backdrop)
+        addSubview(shadowHost)
+        if let imageView = imageView {
+            tile.addSubview(imageView)
+            addSubview(tile)
+        }
+        if let label = label { addSubview(label) }
         place()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Re-fit everything to a new orb diameter. The controller calls this whenever the area the
+    /// Re-fit everything to a new tile size. The controller calls this whenever the area the
     /// overlay is pinned to changes size (a pane split or resized, the window dragged smaller),
-    /// so the orb follows the pane instead of staying one fixed size. Cheap: the image view
+    /// so the badge follows the pane instead of staying one fixed size. Cheap: the image view
     /// rescales its own frames, nothing is re-decoded.
     func relayout(avatar: CGFloat) {
         guard avatar != self.avatar else { return }
@@ -134,29 +269,42 @@ final class HUDView: NSView {
     }
 
     private func place() {
-        let box = NSRect(x: (bounds.width - avatar) / 2, y: bounds.height - avatar,
-                         width: avatar, height: avatar)
-        imageView?.frame = box
-        imageView?.layer?.cornerRadius = avatar / 2
-        needsDisplay = true
-    }
+        let pad = Self.padding(forAvatar: avatar)
+        let cardRadius = Self.cardRadius(forAvatar: avatar)
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard !name.isEmpty else { return }
-        let labelHeight = Self.labelHeight(forAvatar: avatar, name: name)
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.9)
-        shadow.shadowBlurRadius = 3
-        shadow.shadowOffset = NSSize(width: 0, height: -1)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: Self.font(forAvatar: avatar),
-            .foregroundColor: NSColor.white,
-            .shadow: shadow,
-        ]
-        let text = NSAttributedString(string: name, attributes: attrs)
-        let size = text.size()
-        text.draw(at: NSPoint(x: (bounds.width - size.width) / 2,
-                              y: bounds.height - avatar - labelHeight + 4))
+        shadowHost.frame = bounds
+        backdrop.frame = bounds
+        backdrop.layer?.cornerRadius = cardRadius
+        // Inside the backdrop, so the card's own rounding clips it -- a separately rounded scrim
+        // would show a hairline of un-scrimmed blur at the corners.
+        scrim.frame = backdrop.bounds
+        // An explicit path, so the shadow is the card's rounded silhouette rather than something
+        // Core Animation has to derive from the blurred content every frame.
+        shadowHost.layer?.shadowPath = CGPath(roundedRect: bounds,
+                                              cornerWidth: cardRadius, cornerHeight: cardRadius,
+                                              transform: nil)
+
+        tile.frame = NSRect(x: pad, y: pad, width: avatar, height: avatar)
+        tile.layer?.cornerRadius = Self.tileRadius(forAvatar: avatar)
+        // Fill the tile on the short axis and overflow on the long one, centred: the tile's own
+        // clipping then trims the overflow off both ends, which is a centre crop.
+        var width = avatar, height = avatar
+        if imageAspect >= 1 {
+            width = (avatar * imageAspect).rounded()
+        } else {
+            height = (avatar / imageAspect).rounded()
+        }
+        imageView?.frame = NSRect(x: ((avatar - width) / 2).rounded(),
+                                  y: ((avatar - height) / 2).rounded(),
+                                  width: width, height: height)
+
+        if let label = label {
+            label.font = Self.font(forAvatar: avatar)
+            label.sizeToFit()
+            label.setFrameOrigin(NSPoint(x: pad + avatar + Self.gap(forAvatar: avatar),
+                                         y: (bounds.height - label.frame.height) / 2))
+        }
+        needsDisplay = true
     }
 }
 
@@ -316,13 +464,15 @@ final class Controller: NSObject {
     /// The orb is sized off the pinned area's *width* first: what a too-big orb costs is the text
     /// it covers, and text runs horizontally, so a third-width pane wants a third-width orb even
     /// when it's as tall as the window. (Sizing off the shorter side was tried first and never
-    /// bit -- a 480 pt-wide, 540 pt-tall pane still capped out at the maximum.) At 12% a
-    /// full-width pane in a ~1500 pt window lands right at the 104 pt default, a third-width
-    /// pane gets ~58 pt, and a sidebar drops to the floor. The height term only matters for
-    /// short, wide panes (a bottom split a dozen rows tall), where the orb plus label would
-    /// otherwise eat most of the pane. Clamped to `[avatarMin, avatar]`.
-    static let avatarWidthFraction: CGFloat = 0.12
-    static let avatarHeightFraction: CGFloat = 0.3
+    /// bit -- a 480 pt-wide, 540 pt-tall pane still capped out at the maximum.) At 5% a
+    /// half-width pane in a ~1500 pt window lands at the 48 pt default, a third-width pane gets
+    /// ~33 pt, and a sidebar drops to the floor. The height term only matters for short, wide
+    /// panes (a bottom split a dozen rows tall), where the badge would otherwise eat most of the
+    /// pane. Both are the *tile's* side, not the card's -- the card adds its padding on top, so
+    /// the fractions are set a little under what the finished badge is allowed to cover. Clamped
+    /// to `[avatarMin, avatar]`.
+    static let avatarWidthFraction: CGFloat = 0.05
+    static let avatarHeightFraction: CGFloat = 0.15
 
     func avatarSize(for target: CGRect) -> CGFloat {
         let wanted = min(target.width * Self.avatarWidthFraction,
@@ -391,12 +541,24 @@ final class Controller: NSObject {
             panel.setContentSize(view.frame.size)
         }
 
-        // The inset scales with the orb too: a 36 pt margin that looks right around a 104 pt orb
-        // leaves a 58 pt one floating in the middle of its pane's corner.
+        // Each axis is independently either centred in the target or inset from one of its edges.
+        // The inset scales with the orb: a 36 pt margin that looks right around a full-size orb
+        // leaves a shrunken one floating away from the edge it's supposed to hug. A centred axis
+        // ignores the margin entirely -- there's no edge to inset from.
         let s = panel.frame.size
         let m = max(8, (opts.margin * avatar / max(opts.avatar, 1)).rounded())
-        let x = opts.corner.hasSuffix("l") ? target.minX + m : target.maxX - s.width - m
-        let y = opts.corner.hasPrefix("t") ? target.maxY - s.height - m : target.minY + m
+        let x: CGFloat
+        switch opts.position.last {
+        case "l": x = target.minX + m
+        case "r": x = target.maxX - s.width - m
+        default: x = target.midX - s.width / 2
+        }
+        let y: CGFloat
+        switch opts.position.count > 1 ? opts.position.first : nil {
+        case "t": y = target.maxY - s.height - m
+        case "b": y = target.minY + m
+        default: y = target.midY - s.height / 2
+        }
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         if !panel.isVisible { panel.orderFrontRegardless() }
     }

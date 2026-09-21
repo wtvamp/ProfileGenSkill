@@ -280,6 +280,11 @@ reference file — it makes Claude actually introduce itself (name, personality,
 together rather than making the user remember to ask for the second one separately; if they want
 either, wire it in now rather than telling them to do it themselves later.
 
+Before adding either hook, check whether an ancestor directory's `.claude/settings.json` (or
+`~/.claude/settings.json`) already registers it. Claude Code merges hooks from every applicable
+settings file instead of letting the nearest one win, so a second copy in a nested project makes
+it fire twice.
+
 ## 11. Report results
 
 Tell the user: the name, where the persona's markdown landed, where the image/GIF landed, whether

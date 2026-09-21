@@ -15,7 +15,7 @@ Two ways to point it at a persona:
 
 Three ways to actually draw it, chosen by --mode (default `auto`):
 
-  hud      A small always-on-top, click-through overlay window pinned to a corner of the terminal
+  hud      A small always-on-top, click-through overlay window floating over the terminal
            window, showing the picture (animated, for a GIF persona) and the name. macOS only.
            This is the default because it's the only option that consumes no terminal rows,
            touches no user configuration, and doesn't depend on terminal image protocols -- so
@@ -100,7 +100,7 @@ def _display_one(fields: dict, root: Path, args: argparse.Namespace, mode: str) 
             str(name) if (show_name and name) else None,
             avatar=args.avatar,
             avatar_min=args.avatar_min,
-            corner=args.corner,
+            position=args.position,
             margin=args.margin,
         )
         return result
@@ -176,10 +176,15 @@ def main() -> None:
         help="hud avatar's smallest size in points, however narrow the pane gets",
     )
     parser.add_argument(
-        "--corner", choices=["tr", "tl", "br", "bl"], default=hud.DEFAULT_CORNER,
-        help="hud corner of the terminal window (default: top-right)",
+        "--position", "--corner", dest="position",
+        choices=["tc", "c", "bc", "tr", "tl", "br", "bl"], default=hud.DEFAULT_POSITION,
+        help="where in the pane/window the hud sits, as <vertical><horizontal> "
+             "(default: tc, top centre)",
     )
-    parser.add_argument("--margin", type=int, default=hud.DEFAULT_MARGIN, help="hud inset from that corner")
+    parser.add_argument(
+        "--margin", type=int, default=hud.DEFAULT_MARGIN,
+        help="hud inset from the edge, for whichever axis isn't centred",
+    )
     parser.add_argument("--width-pct", type=int, default=10, help="inline image width as %% of terminal width")
     parser.add_argument("--show-image", dest="show_image", action="store_true", default=None)
     parser.add_argument("--no-image", dest="show_image", action="store_false")
