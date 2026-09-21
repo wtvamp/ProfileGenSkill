@@ -64,14 +64,6 @@ Then point nodes 2/3/5's `model`/`clip` inputs at `["1b", 0]`/`["1b", 1]` instea
 filenames that appear in the inventory's `loras` list — match on what the filename suggests
 about style (realism, anime, specific art styles, etc.) against the persona's description.
 
-**Never select a LoRA (or checkpoint) that names or clearly represents a specific real,
-identifiable person** — a real name in the filename/path (e.g. a `celeb/` folder, a named public
-figure, an actor), regardless of how well it might otherwise match the persona's described
-appearance. This is a hard rule, not a style preference: generating a likeness of a real person
-is out of bounds for this skill no matter which backend can technically do it. If the only LoRAs
-that match the requested look are real-person ones, pick a generic/style LoRA instead (or none)
-and say so in your report — don't substitute a real-person LoRA because nothing else fit as well.
-
 Report which LoRAs you picked and why in your response, so the orchestrating skill can tell the
 user.
 
