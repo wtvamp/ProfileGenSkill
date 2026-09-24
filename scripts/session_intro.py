@@ -308,7 +308,7 @@ def main() -> int:
     _prune_claims(now)
 
     root = Path(args.root)
-    personas = discovery.discover_personas(root)
+    personas = discovery.discover_for_session(root)
     activity, source = _recent_activity(root)
 
     name = None
