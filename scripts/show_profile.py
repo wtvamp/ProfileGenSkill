@@ -240,7 +240,7 @@ def main() -> None:
         if fields and _autostart_allows(fields):
             reports.append(_display_one(fields, root, args, mode))
     else:
-        for persona in discovery.discover_personas(root):
+        for persona in discovery.discover_for_session(root):
             if args.slug and persona.slug != args.slug:
                 continue
             if not _autostart_allows(persona.fields):
