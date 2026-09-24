@@ -166,9 +166,14 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
     profile_text = Path(write_result["markdown_path"]).read_text(encoding="utf-8")
     assert "nsfw: true" in profile_text
     assert "variant: sfw" in profile_text
-    assert nsfw_image_result["path"] in profile_text
+    # pictures are recorded relative to the project root, as the schema says -- Claude Buddy
+    # refuses a rooted persona picture, so an absolute path here put the wrong face on an orb
+    def rel(p):
+        return Path(p).resolve().relative_to(tmp_path.resolve()).as_posix()
+    assert f'image_nsfw: "{rel(nsfw_image_result["path"])}"' in profile_text
+    assert nsfw_image_result["path"] not in profile_text
     # ...and the visible markdown picture is the SFW one, never the explicit variant
-    assert f"![Test Persona]({gif_result['path']})" in profile_text
+    assert f"![Test Persona]({rel(gif_result['path'])})" in profile_text
 
     gitignore_path = tmp_path / ".gitignore"
     assert gitignore_path.exists()

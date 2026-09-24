@@ -115,6 +115,16 @@ def _write(args: argparse.Namespace) -> None:
         return
     fields["image_nsfw"] = image_nsfw
     fields["nsfw"] = bool(image_nsfw)
+    # The schema records pictures relative to the project root, but generate_image.py reports an
+    # absolute path and callers paste it straight in. show_profile.py copes (an absolute path joins
+    # to itself), but Claude Buddy refuses a rooted persona picture by design -- so a persona
+    # written that way showed its name on an orb with somebody else's face.
+    # Only the recorded copy changes: the JSON report below still echoes the path the caller
+    # passed, since callers go on to open that file.
+    reported_image = fields.get("image")
+    reported_image_nsfw = fields.get("image_nsfw")
+    for key in ("image", "image_nsfw"):
+        fields[key] = root_relative(fields.get(key), args.root)
     requested_variant = variants.normalize(display.get("variant"))
     fields["display"] = {
         "image": display.get("image", True),
@@ -161,14 +171,27 @@ def _write(args: argparse.Namespace) -> None:
         json.dumps(
             {
                 "markdown_path": markdown_path,
-                "image_path": fields.get("image"),
-                "image_nsfw_path": fields.get("image_nsfw"),
+                "image_path": reported_image,
+                "image_nsfw_path": reported_image_nsfw,
                 "gitignore_updated": gitignore_updated,
                 "claude_md_updated": args.output in ("claude-md", "claude-md-ref"),
                 "claude_md_path": claude_md_path,
             }
         )
     )
+
+
+def root_relative(image, root):
+    """An absolute picture path inside ``root``, rewritten relative to it; anything else as-is."""
+    if not isinstance(image, str) or not image:
+        return image
+    path = Path(image)
+    if not path.is_absolute():
+        return image
+    try:
+        return path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return image
 
 
 def main() -> None:
