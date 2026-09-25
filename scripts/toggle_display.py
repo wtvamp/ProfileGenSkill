@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """CLI: flip a persona's stored display preferences (image/name/autostart/variant) in place.
 
-Discovers personas the same way show_profile.py does (via <root>/CLAUDE.md's profile-gen marker
-blocks) and edits whichever markdown file that persona's content actually lives in --
+Discovers personas the same way show_profile.py does (via the profile-gen marker blocks of the
+nearest CLAUDE.md at or above <root> that has any) and edits whichever markdown file that persona's content actually lives in --
 persona.md/profiles/<slug>/<slug>.md for claude-md-ref, or the right slug's own marker-delimited
 region inside CLAUDE.md itself for a fully-embedded (claude-md) persona. Only the display: block
 is touched; nothing else in the file is regenerated or reformatted.
@@ -66,7 +66,7 @@ def main() -> None:
         return
 
     root = Path(args.root).resolve()
-    personas = discovery.discover_personas(root)
+    personas = discovery.discover_nearest(root)
     if args.slug:
         personas = [p for p in personas if p.slug == args.slug]
 
