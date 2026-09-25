@@ -49,3 +49,45 @@ def test_moving_somewhere_with_no_persona_leaves_the_badge_alone(tmp_path):
 def test_missing_payload_fields_do_nothing(tmp_path):
     assert cwd_changed.plan(None, None) == []
     assert cwd_changed.plan(str(tmp_path), None) == []
+
+
+def _home_with_persona(tmp_path: Path) -> Path:
+    # ~/CLAUDE.md declaring a persona of its own, as on Warren's machine (Pixel).
+    from test_discovery_nearest import _project
+    _project(tmp_path, "Pixel", "persona")
+    return tmp_path
+
+
+def test_cd_out_of_the_project_does_not_take_the_home_persona(tmp_path):
+    home = _home_with_persona(tmp_path)
+    repo = home / "Source" / "Claude-Buddy"
+    from test_discovery_nearest import _project
+    _project(repo, "Jennifer Voss", "jennifer-voss")
+
+    # `cd ~` inside a Bash call: Claude Code resets the shell to the repo afterwards without firing
+    # CwdChanged, so drawing Pixel here would leave her stuck on screen.
+    assert cwd_changed.plan(str(repo), str(home), project_dir=str(repo)) == []
+    assert cwd_changed.plan(str(repo), str(home / "tmp"), project_dir=str(repo)) == []
+
+
+def test_coming_back_into_the_project_from_outside_is_not_a_persona_change(tmp_path):
+    home = _home_with_persona(tmp_path)
+    repo = home / "Source" / "Claude-Buddy"
+    from test_discovery_nearest import _project
+    _project(repo, "Jennifer Voss", "jennifer-voss")
+
+    # The outside directory already counted as the project, so returning is no change at all.
+    assert cwd_changed.plan(str(home), str(repo), project_dir=str(repo)) == []
+
+
+def test_moves_inside_the_project_still_swap(tmp_path):
+    evidence = _evidence_tree(tmp_path)
+    caldwell = evidence / "01_CASES" / "Caldwell"
+
+    assert cwd_changed.plan(str(evidence), str(caldwell), project_dir=str(evidence))[-1] == [
+        "--root", str(caldwell), "--autostart-only",
+    ]
+    # Leaving the project from inside Caldwell goes back to the project's persona.
+    assert cwd_changed.plan(str(caldwell), str(tmp_path / "elsewhere"), project_dir=str(evidence))[-1] == [
+        "--root", str(evidence.resolve()), "--autostart-only",
+    ]
