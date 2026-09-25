@@ -7,6 +7,11 @@ a fully-embedded (`claude-md`) persona. `embedded=True` on the latter tells a ca
 edit the `display:` block that it must confine the edit to that persona's own marker-delimited
 region within CLAUDE.md (see `frontmatter.block_span`) -- CLAUDE.md can hold more than one
 embedded persona, so an unscoped edit could touch the wrong one's block.
+
+A session started in a subdirectory wears the persona of the nearest enclosing CLAUDE.md that
+declares one (see `discover_nearest`), the same way Claude Code itself loads every ancestor
+CLAUDE.md -- so `Evidence/01_CASES` keeps `Evidence`'s persona unless its own CLAUDE.md (or one in
+between) names a different one. A CLAUDE.md with no profile-gen block doesn't count.
 """
 from __future__ import annotations
 
@@ -26,6 +31,9 @@ class DiscoveredPersona:
     fields: dict
     markdown_path: Path
     embedded: bool
+    # The directory whose CLAUDE.md declared this persona. Its `image` fields are recorded relative
+    # to this, not to wherever the session happens to have started.
+    root: Path
 
 
 def _load_markdown_fields(markdown_path: Path) -> dict | None:
@@ -52,11 +60,11 @@ def discover_personas(root: Path) -> list[DiscoveredPersona]:
             target = root / ref
             fields = _load_markdown_fields(target)
             if fields:
-                personas.append(DiscoveredPersona(slug, fields, target, embedded=False))
+                personas.append(DiscoveredPersona(slug, fields, target, embedded=False, root=root))
             continue
         embedded_fields = frontmatter.extract_embedded_block(text, slug)
         if embedded_fields:
-            personas.append(DiscoveredPersona(slug, embedded_fields, claude_md, embedded=True))
+            personas.append(DiscoveredPersona(slug, embedded_fields, claude_md, embedded=True, root=root))
     return personas
 
 
@@ -128,19 +136,38 @@ def agent_persona(root: Path, name: str) -> DiscoveredPersona | None:
         if path.is_file():
             fields = _load_markdown_fields(path)
             if fields:
-                return DiscoveredPersona(fields.get("slug") or name, fields, path, embedded=False)
+                return DiscoveredPersona(fields.get("slug") or name, fields, path, embedded=False, root=root)
     return None
+
+
+def _self_and_ancestors(start: Path) -> list[Path]:
+    start = start.resolve()
+    return [start, *start.parents]
+
+
+def discover_nearest(start: Path) -> list[DiscoveredPersona]:
+    """The personas of the nearest CLAUDE.md, at or above `start`, that declares any."""
+    for directory in _self_and_ancestors(start):
+        personas = discover_personas(directory)
+        if personas:
+            return personas
+    return []
 
 
 def discover_for_session(root: Path, agent_name: str | None = None) -> list[DiscoveredPersona]:
     """What *this* session should wear.
 
-    A team member with its own persona file gets that one. A team member without one gets
+    Both searches start at `root` and walk up, so a session opened in a subdirectory of a project
+    finds that project's persona. A team member with its own persona file gets that one. A team
+    member without one gets
     nothing at all -- no badge beats the lead's badge, because a wrong face is read as a fact about
     who is talking while a missing one is only a gap. Everything else gets the project personas.
     """
     name = agent_name if agent_name is not None else current_agent_name()
     if name:
-        own = agent_persona(root, name)
-        return [own] if own else []
-    return discover_personas(root)
+        for directory in _self_and_ancestors(root):
+            own = agent_persona(directory, name)
+            if own:
+                return [own]
+        return []
+    return discover_nearest(root)

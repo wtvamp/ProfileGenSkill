@@ -54,7 +54,7 @@ Each persona's `display.image`/`display.name` fields (see `references/profile-sc
 Two invocation modes:
 
 - `--profile <markdown_path> --root <PROJECT_ROOT>` — shows exactly one profile, used right after `write_profile.py` for an immediate preview (SKILL.md step 10).
-- `--root <PROJECT_ROOT>` (no `--profile`) — discovers every persona currently auto-loaded via `<PROJECT_ROOT>/CLAUDE.md`'s `profile-gen` marker blocks and shows each one. This is the mode for a `SessionStart` hook (below), since it needs no argument beyond the project root to find whatever persona(s) are active in that project.
+- `--root <PROJECT_ROOT>` (no `--profile`) — discovers every persona currently auto-loaded via the `profile-gen` marker blocks of the nearest `CLAUDE.md` at or above `<PROJECT_ROOT>` that declares one, and shows each one. So a session started in `Evidence/01_CASES` wears `Evidence`'s persona, while `Evidence/01_CASES/Caldwell` wears its own if its `CLAUDE.md` declares one; a `CLAUDE.md` with no profile-gen block is skipped over rather than blanking the persona. Image paths resolve against the directory that declared the persona. This is the mode for a `SessionStart` hook (below), since it needs no argument beyond the project root to find whatever persona(s) are active in that project.
 
 `--show-image`/`--no-image`/`--show-name`/`--no-name` on the command line override a persona's stored preference for that one invocation only, without touching what's saved in its markdown.
 
@@ -112,6 +112,31 @@ Even with `allow-passthrough on`, plain tmux can only show an *inline* image for
 Replace `<SKILL_DIR>` with this skill's actual install location (e.g. `~/.claude/skills/profile-gen` — the same directory this file lives under). `$CLAUDE_PROJECT_DIR` is the project-root environment variable Claude Code sets for hook commands; if a given Claude Code version doesn't set it, hardcode the project's absolute path instead of relying on a default.
 
 This hook needs no `--profile` argument — plain `--root` mode discovers whichever persona(s) are referenced from that project's `CLAUDE.md` on its own. Use the `update-config` skill to actually apply a settings.json change like this one, rather than hand-editing it.
+
+## Following the session into subdirectories: the CwdChanged hook
+
+The SessionStart hook picks the badge once. When an agent `cd`s from `Evidence/01_CASES` into `Evidence/01_CASES/Caldwell`, whose CLAUDE.md declares its own persona, the badge should become Caldwell's — and go back when it leaves. `scripts/cwd_changed.py` does that from Claude Code's `CwdChanged` event, which passes `{"old_cwd", "new_cwd"}` on stdin:
+
+```json
+{
+  "hooks": {
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 <SKILL_DIR>/scripts/cwd_changed.py >/dev/null 2>&1 || true",
+            "timeout": 60,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+It resolves the nearest persona for both directories and redraws only when they differ, so moving around inside one persona's tree never flickers. On a change it clears the old badge and draws the new persona under `--autostart-only`, so a persona that stays quiet at startup also stays quiet on arrival instead of leaving the previous persona's face up. Moving somewhere with no persona anywhere above it changes nothing: the session still has the CLAUDE.md it started with loaded. Like the SessionStart hook, register it once, at the user level (it is in `~/.claude/settings.json` and `~/.claude-board/settings.json`); hooks already loaded by a running session aren't re-read, so it takes effect from the next session.
 
 ## A spoken self-introduction via the same hook
 

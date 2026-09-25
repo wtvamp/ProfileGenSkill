@@ -4,8 +4,10 @@
 Two ways to point it at a persona:
 
   --root ROOT
-      Default mode. Every persona currently auto-loaded via ROOT/CLAUDE.md's profile-gen marker
-      blocks (the same blocks write_profile.py --output claude-md/claude-md-ref maintains).
+      Default mode. Every persona currently auto-loaded via the profile-gen marker blocks (the
+      same blocks write_profile.py --output claude-md/claude-md-ref maintains) of the nearest
+      CLAUDE.md at or above ROOT that has any, so a session in a project's subdirectory keeps the
+      project's persona unless a closer CLAUDE.md declares its own.
 
   --profile PATH [--root ROOT]
       Exactly one profile's markdown file, skipping CLAUDE.md discovery -- used for the immediate
@@ -245,7 +247,7 @@ def main() -> None:
                 continue
             if not _autostart_allows(persona.fields):
                 continue
-            reports.append(_display_one(persona.fields, root, args, mode))
+            reports.append(_display_one(persona.fields, persona.root, args, mode))
 
     if machine_readable:
         _print_reports(reports)
