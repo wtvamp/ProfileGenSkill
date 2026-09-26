@@ -1,10 +1,20 @@
 """Which of a persona's two pictures is the one to show.
 
-A persona has a **SFW picture** (``image``) and, optionally, an **NSFW picture**
-(``image_nsfw``) -- the same character, generated from the same seed and base prompt with the
-NSFW clause added, so the two read as one person rather than two. ``display.variant`` records
-which of them is currently on screen; `/display-profile nsfw on|off|toggle` flips it, and
-nothing else about the persona changes when it does.
+A persona has a **SFW picture** and, optionally, an **NSFW picture** (``image_nsfw``) -- the
+same character, generated from the same seed and base prompt with the NSFW clause added, so the
+two read as one person rather than two. ``display.variant`` records which of them is currently on
+screen, and `/display-profile nsfw on|off|toggle` flips it.
+
+``image`` is always **the picture currently selected**, not the SFW one. That is what lets a
+generic profile reader -- anything that just takes a markdown file's ``image:`` or its first
+``![...](...)``, with no idea this module exists -- show the right picture. So a persona that has
+both variants stores each under its own key (``image_sfw`` and ``image_nsfw``), and a toggle
+rewrites ``image:`` and the body's picture link to whichever is selected (see
+``frontmatter.set_active_image``).
+
+A two-variant persona written before ``image_sfw`` existed has no ``image_sfw`` and an ``image``
+that is always its SFW picture, whatever ``display.variant`` says; ``paths()`` reads it that way,
+and the first toggle under this module adds ``image_sfw`` before moving ``image``.
 
 Top-level ``nsfw:`` therefore no longer means "this persona's one picture is explicit" -- it
 means **an NSFW variant exists**. That reinterpretation is what makes profiles written before
@@ -51,7 +61,15 @@ def paths(fields: dict) -> dict[str, str]:
     references/profile-schema.md) -- resolving them against a root is the caller's job.
     """
     image = fields.get("image") or None
+    image_sfw = fields.get("image_sfw") or None
     image_nsfw = fields.get("image_nsfw") or None
+
+    if image_sfw:
+        # `image` is only the currently selected copy; the variants live under their own keys.
+        available = {SFW: str(image_sfw)}
+        if image_nsfw:
+            available[NSFW] = str(image_nsfw)
+        return available
 
     if image_nsfw is None and fields.get("nsfw") and image:
         # Legacy single-image NSFW persona: its one picture is the NSFW one (see module docstring).

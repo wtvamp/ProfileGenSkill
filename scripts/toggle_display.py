@@ -10,8 +10,10 @@ is touched; nothing else in the file is regenerated or reformatted.
 At least one of --image/--name/--autostart/--variant is required. --image/--name control what is
 drawn; --autostart controls whether a SessionStart hook shows this persona on its own, which is a
 separate question -- a persona can stay quiet at startup while still displaying when asked for.
---variant sfw|nsfw|toggle picks which of the persona's two pictures is shown (their SFW `image`
-or their optional `image_nsfw`); `toggle` flips whichever is stored now. Switching to a variant
+--variant sfw|nsfw|toggle picks which of the persona's two pictures is shown (`image_sfw` or
+`image_nsfw`); `toggle` flips whichever is stored now. The switch also rewrites the profile's
+`image:` key and its body picture link to the selected file, so any other program reading the
+profile -- one that knows nothing of variants -- shows the same picture. Switching to a variant
 the persona has no picture for is refused rather than silently ignored, so `/display-profile nsfw
 on` against a persona with no NSFW picture says so.
 
@@ -110,6 +112,26 @@ def main() -> None:
                 variant=variant,
                 region=region,
             )
+            if variant is not None:
+                # Move `image:` (and the body's picture) onto the selected variant, so a reader
+                # that only knows `image:` shows the same picture show_profile.py does.
+                available = variants.paths(persona.fields)
+                migrate_sfw = None
+                if (
+                    variants.SFW in available
+                    and variants.NSFW in available
+                    and not persona.fields.get("image_sfw")
+                ):
+                    migrate_sfw = available[variants.SFW]
+                if persona.embedded:
+                    region = frontmatter.block_span(new_text, persona.slug)
+                new_text = frontmatter.set_active_image(
+                    new_text,
+                    available[variant],
+                    replaces=(*available.values(), str(persona.fields.get("image") or "")),
+                    image_sfw=migrate_sfw,
+                    region=region,
+                )
         except ValueError as e:
             _fail(f"{persona.markdown_path}: {e}")
             return

@@ -71,7 +71,7 @@ follows, and pass `--workflow`/`--gif-workflow` to `generate_image.py`/`check_co
 
 ## SFW and NSFW pictures
 
-Every persona has a **SFW picture** (`image`). `--nsfw` adds a second, optional **NSFW picture**
+Every persona has a **SFW picture**. `--nsfw` adds a second, optional **NSFW picture**
 (`image_nsfw`) of the same character — same backend, same seed, same base prompt, regenerated
 with the NSFW clause appended — rather than making the persona's one picture explicit.
 
@@ -82,6 +82,8 @@ Which of the two is on screen is the persona's `display.variant`, and it starts 
 /display-profile nsfw off      # back to the SFW one
 /display-profile nsfw toggle   # flip to whichever isn't showing
 ```
+
+A switch rewrites the profile's own `image:` and its body picture to the selected file (both variants stay recorded, as `image_sfw` and `image_nsfw`). So anything else that reads the profile as a plain markdown file with a picture — Claude Buddy, for one — shows the selected picture without knowing variants exist.
 
 The switch is persisted in the profile's own markdown, so it survives across sessions until
 switched back, and it touches nothing else about the persona. The NSFW picture is referenced

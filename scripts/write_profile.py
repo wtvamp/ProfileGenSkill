@@ -49,6 +49,9 @@ rendering so every written profile has explicit values, even one predating a fie
 `image` is the persona's SFW picture and `image_nsfw` their optional NSFW one -- the same
 character from the same seed and base prompt, generated a second time with the NSFW clause
 added, so `/display-profile nsfw on|off|toggle` swaps the picture without swapping the persona.
+In the written profile `image` is whichever of the two `display.variant` selects, and a persona
+with both keeps the SFW path under `image_sfw`, so a reader that only knows `image:` still shows
+the selected picture.
 Top-level `nsfw` is derived here: true exactly when `image_nsfw` is set. Each field holds one
 file, a static PNG or an animated GIF, never both; `generation.gif_mode` says which (null for a
 plain static image, "native"/"synthetic" for a GIF) and describes both variants, since they are
@@ -133,6 +136,13 @@ def _write(args: argparse.Namespace) -> None:
         # never leave a profile pointing at a variant it has no picture for
         "variant": requested_variant if image_nsfw else variants.SFW,
     }
+    # `image` is the *selected* picture, so a generic reader of the profile shows the right one;
+    # with two variants, each also gets its own key for toggle_display.py to switch between.
+    fields["image_sfw"] = None
+    if image_nsfw:
+        fields["image_sfw"] = fields["image"]
+        if fields["display"]["variant"] == variants.NSFW:
+            fields["image"] = fields["image_nsfw"]
 
     try:
         if args.output == "claude-md":

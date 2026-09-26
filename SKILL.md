@@ -193,7 +193,7 @@ Only pass `--workflow` when step 4a built one; otherwise the backend falls back 
 `COMFYUI_WORKFLOW`/config (irrelevant for chatgpt/grok).
 
 **Do not pass `--nsfw` here.** This call produces the persona's SFW picture — the one that is
-always present, the one the markdown body shows, and the one `display.variant: sfw` points at.
+always present, the one `display.variant: sfw` points at, and the one `image:` and the markdown body show until the user switches variants.
 The NSFW variant is a second call, in step 7b.
 
 Prints `{"path", "backend", "model", "seed", "width", "height"}` as JSON. Hold onto the returned
