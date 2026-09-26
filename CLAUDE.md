@@ -14,7 +14,7 @@ The skill is implemented. Entry point: `SKILL.md` (frontmatter + step-by-step in
   - `backends/` — `ImageBackend` protocol (`base.py`) plus `chatgpt.py`/`grok.py`/`grok_cli.py`/`comfyui.py`/`mock.py` implementations.
   - `config.py` — backend config resolution (CLI flag > env var > project config > user config).
   - `prompt.py` — NSFW-aware prompt building, shared across backends.
-  - `variants.py` — which of a persona's two pictures (`image` / `image_nsfw`) `display.variant` selects, plus the reinterpretation that keeps pre-variant profiles working.
+  - `variants.py` — which of a persona's two pictures (`image_sfw` / `image_nsfw`; `image` is always the selected one) `display.variant` selects, plus the reinterpretation that keeps pre-variant profiles working.
   - `gif.py` — synthetic "living portrait" GIF assembly (pan/zoom fallback when no native animation backend is available).
   - `comfyui_inventory.py` — parses a ComfyUI server's `/object_info` into checkpoints/LoRAs/samplers and native-animation-family detection.
   - `render.py` — mini regex-based template engine for `templates/*.j2` (no Jinja dependency; see its module docstring for the supported `{{ field }}` / `{% if field %}...{% endif %}` syntax).

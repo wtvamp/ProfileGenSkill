@@ -199,3 +199,55 @@ def set_display_flags(
         segment[: match.start(1)] + "".join(rewritten) + segment[match.end(1) :]
     )
     return text[:start] + new_segment + text[end:]
+
+
+_TOP_IMAGE_RE = re.compile(r"^image:[ \t]*[^\n]*$", re.MULTILINE)
+_TOP_IMAGE_SFW_RE = re.compile(r"^image_sfw:[ \t]*[^\n]*$", re.MULTILINE)
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]*)\)")
+
+
+def set_active_image(
+    text: str,
+    path: str,
+    *,
+    replaces: tuple[str, ...] = (),
+    image_sfw: str | None = None,
+    region: tuple[int, int] | None = None,
+) -> str:
+    """Point the persona's picture at ``path``: the top-level ``image:`` key and every markdown
+    picture link (``![alt](...)``) whose target is one of ``replaces`` -- the persona's known
+    variant paths, so an unrelated picture elsewhere in the file is never touched.
+
+    This is what makes a variant switch visible to a generic profile reader, which knows nothing
+    of ``image_nsfw``/``display.variant`` and just shows ``image:`` or the body's picture.
+
+    ``image_sfw``, when given and the target region has no ``image_sfw:`` key yet, is inserted
+    directly after ``image:`` -- the one-time migration of a profile written before ``image``
+    started tracking the selected variant, so the SFW path isn't lost when ``image`` moves off it.
+
+    ``region`` confines the edit exactly as for ``set_display_flags``. Raises ``ValueError`` if
+    the region has no top-level ``image:`` key.
+    """
+    start, end = region if region is not None else (0, len(text))
+    segment = text[start:end]
+
+    if _TOP_IMAGE_RE.search(segment) is None:
+        raise ValueError("no top-level image: key found in the target region")
+
+    def _image_line(_match: re.Match) -> str:
+        line = f'image: "{path}"'
+        if image_sfw is not None and _TOP_IMAGE_SFW_RE.search(segment) is None:
+            line += f'\nimage_sfw: "{image_sfw}"'
+        return line
+
+    segment = _TOP_IMAGE_RE.sub(_image_line, segment, count=1)
+
+    known = {r for r in replaces if r}
+
+    def _link(match: re.Match) -> str:
+        if match.group(2) in known:
+            return f"![{match.group(1)}]({path})"
+        return match.group(0)
+
+    segment = _MD_IMAGE_RE.sub(_link, segment)
+    return text[:start] + segment + text[end:]

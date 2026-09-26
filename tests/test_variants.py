@@ -98,3 +98,19 @@ def test_missing_reason_explains_the_legacy_shape_rather_than_claiming_image_is_
 def test_missing_reason_for_a_plain_sfw_persona_points_at_image_nsfw():
     fields = _persona()
     assert "image_nsfw is unset" in variants.missing_reason(fields, "nsfw")
+
+
+def test_image_sfw_is_the_sfw_picture_once_image_tracks_the_selection():
+    # after a switch to nsfw, `image` holds the nsfw path; the variants come from their own keys
+    fields = _persona(
+        image="profiles/test/test-nsfw.png",
+        image_sfw="profiles/test/test.png",
+        image_nsfw="profiles/test/test-nsfw.png",
+        nsfw=True,
+        display={"variant": "nsfw"},
+    )
+    assert variants.paths(fields) == {
+        "sfw": "profiles/test/test.png",
+        "nsfw": "profiles/test/test-nsfw.png",
+    }
+    assert variants.resolve(fields, "sfw").path == "profiles/test/test.png"
