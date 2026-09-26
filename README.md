@@ -18,9 +18,15 @@ ln -s "$(pwd)" .claude/skills/profile-gen
 # or user-scoped (available in every project)
 mkdir -p ~/.claude/skills
 ln -s "$(pwd)" ~/.claude/skills/profile-gen
+
+# the /display-profile companion command (switch variants, show/hide the picture)
+mkdir -p ~/.claude/commands
+ln -s "$(pwd)/commands/display-profile.md" ~/.claude/commands/display-profile.md
 ```
 
-Then invoke it from Claude Code as `/profile-gen`.
+If you run Claude Code with `CLAUDE_CONFIG_DIR` set, link into that directory's `skills/` and `commands/` instead of (or as well as) `~/.claude`.
+
+Then invoke it from Claude Code as `/profile-gen`, and `/display-profile` to control how a generated persona is shown.
 
 ## Requirements
 
