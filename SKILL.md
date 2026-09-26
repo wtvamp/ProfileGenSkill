@@ -352,4 +352,4 @@ switches back. Don't display the NSFW variant unasked, even when the user asked 
 - `references/terminal-display.md` — how `show_profile.py` detects a terminal's inline-image
   protocol, sizing/fallback behavior, the `SessionStart` hook snippet for persistent per-session
   display, and `scripts/toggle_display.py` for flipping `display.image`/`display.name` after the
-  fact (also wrapped by the `/display-profile` user command, `~/.claude/commands/display-profile.md`).
+  fact (also wrapped by the `/display-profile` user command, `commands/display-profile.md` in this skill, symlinked into `~/.claude/commands/`).
