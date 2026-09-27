@@ -86,3 +86,37 @@ def test_inject_workflow_with_no_output_node_reports_none():
     assert resolved["positive_node"] == "2"
     assert resolved["negative_node"] == "3"
     assert resolved["latent_node"] == "4"
+
+
+def _i2v_workflow() -> dict:
+    return {
+        "1": {"class_type": "CLIPTextEncode", "_meta": {"title": "ProfileGen Positive"}, "inputs": {"text": ""}},
+        "2": {"class_type": "CLIPTextEncode", "_meta": {"title": "ProfileGen Negative"}, "inputs": {"text": ""}},
+        "3": {"class_type": "LoadImage", "_meta": {"title": "Some Other Image"}, "inputs": {"image": "other.png"}},
+        "4": {"class_type": "LoadImage", "_meta": {"title": "ProfileGen Source Still"}, "inputs": {"image": "pixel.png"}},
+    }
+
+
+def test_inject_replaces_hardcoded_source_still():
+    wf, resolved = inject(_i2v_workflow(), PromptSpec(positive="ava"), "profilegen-abc.png")
+
+    assert resolved["source_node"] == "4"
+    assert wf["4"]["inputs"]["image"] == "profilegen-abc.png"
+    assert wf["3"]["inputs"]["image"] == "other.png"
+
+
+def test_inject_source_still_falls_back_to_first_load_image():
+    workflow = _i2v_workflow()
+    del workflow["4"]
+
+    wf, resolved = inject(workflow, PromptSpec(positive="ava"), "profilegen-abc.png")
+
+    assert resolved["source_node"] == "3"
+    assert wf["3"]["inputs"]["image"] == "profilegen-abc.png"
+
+
+def test_inject_without_source_leaves_load_image_alone():
+    wf, resolved = inject(_i2v_workflow(), PromptSpec(positive="ava"))
+
+    assert resolved["source_node"] is None
+    assert wf["4"]["inputs"]["image"] == "pixel.png"
