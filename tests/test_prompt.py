@@ -91,3 +91,54 @@ def test_nsfw_switching_backend_does_not_add_a_second_clause():
     combined, _ = prompt_mod.build(local_first, None, nsfw=True, backend="grok")
     assert combined.count(prompt_mod._NSFW_MARKER_LOCAL) == 1
     assert prompt_mod._NSFW_MARKER_HOSTED not in combined.lower()
+
+
+def test_local_nsfw_clause_is_visual_not_permission_language():
+    clause = prompt_mod.NSFW_CLAUSE_LOCAL.lower()
+    for word in ("nude", "topless", "bare breasts", "bare skin", "sensual pose", "boudoir"):
+        assert word in clause
+    for word in ("permitted", "allowed", "censorship", "restrictions"):
+        assert word not in clause
+
+
+def test_legacy_local_clause_is_not_doubled():
+    legacy = "a person, explicit adult content permitted, nudity and sexual content allowed"
+    pos, _ = prompt_mod.build(legacy, None, nsfw=True, backend="comfyui")
+    assert prompt_mod.NSFW_CLAUSE_LOCAL not in pos
+
+
+def test_pony_checkpoint_gets_rating_tags_when_nsfw():
+    pos, neg = prompt_mod.build(
+        "a woman", "blurry, nude, child", nsfw=True, backend="comfyui",
+        checkpoint="pony\\cyberrealisticPony_v125.safetensors",
+    )
+    assert pos.startswith(prompt_mod.PONY_NSFW_PREFIX)
+    terms = [t.strip() for t in neg.split(",")]
+    for t in prompt_mod.PONY_NSFW_NEGATIVE_TERMS:
+        assert terms.count(t) == 1
+    assert "child" in terms and "nude" not in terms
+
+
+def test_pony_tags_not_doubled_on_regeneration():
+    ck = "PonyRealism_V21.safetensors"
+    p1, n1 = prompt_mod.build("a woman", None, nsfw=True, checkpoint=ck)
+    p2, n2 = prompt_mod.build(p1, n1, nsfw=True, checkpoint=ck)
+    assert p2.count("rating_explicit") == 1
+    assert n2.count("rating_safe") == 1
+
+
+def test_no_pony_tags_for_sfw_or_non_pony_checkpoints():
+    sfw, sfw_neg = prompt_mod.build("a woman", None, nsfw=False, checkpoint="pony\\x.safetensors")
+    assert "rating_explicit" not in sfw and "rating_safe" not in sfw_neg
+    sdxl, sdxl_neg = prompt_mod.build("a woman", None, nsfw=True, checkpoint="sdxl\\juggernautXL.safetensors")
+    assert "rating_explicit" not in sdxl and "rating_safe" not in sdxl_neg
+    none_ck, _ = prompt_mod.build("a woman", None, nsfw=True)
+    assert "rating_explicit" not in none_ck
+
+
+def test_checkpoint_from_workflow():
+    wf = {"1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "pony\\a.safetensors"}},
+          "2": {"class_type": "KSampler", "inputs": {"seed": 1}}}
+    assert prompt_mod.checkpoint_from_workflow(wf) == "pony\\a.safetensors"
+    assert prompt_mod.checkpoint_from_workflow({"1": {"class_type": "UNETLoader", "inputs": {"unet_name": "wan"}}}) is None
+    assert prompt_mod.checkpoint_from_workflow({}) is None

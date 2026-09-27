@@ -3,10 +3,16 @@
 Read this before drafting the image prompt in SKILL.md step 6, and before writing the
 personality description in step 3 when `nsfw` is set.
 
-One drafted prompt produces both of a persona's pictures. SKILL.md step 7 generates the SFW one
-without `--nsfw`; step 7b re-runs the same prompt, style preset and **seed** with `--nsfw`, and
-`build()` appends the NSFW clause and strips the suppressing negative terms for that call only.
-Reusing the seed is what makes the two pictures the same person rather than two strangers.
+A persona's two pictures come from **two** drafted prompts that share one seed. SKILL.md step 7
+generates the SFW one without `--nsfw`; step 7b generates the NSFW one from its own NSFW subject
+text (see "NSFW subject text" below) with the **same seed** and style preset, plus `--nsfw`.
+Reusing the seed and the identity words (face, hair, ethnicity, age) is what makes the two pictures
+the same person rather than two strangers.
+
+**Never reuse the SFW prompt file for the NSFW call.** Any clothing ("wearing a fitted wrap dress")
+or office/workplace framing left in the positive outweighs an appended NSFW clause, and the model
+renders the clothed SFW picture again. That was the long-standing "the NSFW variant isn't NSFW"
+bug.
 
 ## Image prompt recipe
 
@@ -26,6 +32,23 @@ below — **you should not append an NSFW clause yourself** (see the next sectio
 right phrasing depends on the backend, and getting it wrong on a hosted backend actively causes
 refusals rather than helping).
 
+## NSFW subject text
+
+Write a second prompt file for step 7b. Start from the SFW subject text and:
+
+- **Keep** the name, the stated adult age (and "clearly adult woman/man"), ethnicity, face, eyes,
+  hair, makeup and jewelry — everything that makes her recognisable.
+- **Remove** every clothing word (blouse, blazer, dress, jacket, top, turtleneck, necklace-on-a-
+  collar framing...) and every workplace/office/role-setting phrase.
+- **Replace** the framing with `waist-up portrait` and the setting with an intimate boudoir or
+  bedroom one (e.g. `in a softly lit bedroom, silk sheets, warm lamp light`).
+- Do not add explicit words yourself; `build()` appends `NSFW_CLAUSE_LOCAL` (and the Pony tags
+  when relevant).
+
+Keep the child/teen/underage terms in the negative for both variants — `build()` never strips
+them. For a native GIF of the NSFW variant, pass this same NSFW prompt file to `make_gif.py
+--nsfw`, so the video model is told she is nude and does not re-clothe her.
+
 ## NSFW clause — backend-aware, and why
 
 `build()` picks one of two clauses depending on `--backend`, because "explicit permission"
@@ -35,12 +58,18 @@ the loop:
 **Local/self-hosted (`comfyui`)** — no vendor classifier at all; it's the user's own server and
 model weights. `NSFW_CLAUSE_LOCAL` (verbatim, kept in sync with `prompt.py`):
 
-> explicit adult content permitted, nudity and sexual content allowed, no censorship or content
-> restrictions
+> nude, topless, bare breasts, bare skin, sensual pose, intimate boudoir setting
 
-This directness is appropriate and often *necessary* here — many checkpoints/LoRAs need
-explicit anatomical language to actually produce full nudity/explicit content, and there's no
-classifier to trigger a refusal.
+It has to be **visual** language. A diffusion model renders what the prompt depicts, not what it
+permits: the old clause ("explicit adult content permitted, … no censorship or content
+restrictions") depicts nothing, and produced clothed "NSFW" pictures.
+
+**Pony-family checkpoints** (the checkpoint name contains `pony`, e.g.
+`pony\cyberrealisticPony_v125`) are trained on score/rating tags and default to safe without
+them. `generate_image.py` reads the checkpoint from the ComfyUI workflow and, for an NSFW call,
+`build()` prepends `score_9, score_8_up, score_7_up, rating_explicit` and adds `rating_safe,
+clothed, clothes, dress, shirt` to the negative. Video workflows (Wan/LTX `UNETLoader`) have no
+checkpoint, so they get the visual clause only.
 
 **Hosted backends with a classifier in the loop (`chatgpt`, `grok`, `grok-cli`)** —
 `NSFW_CLAUSE_HOSTED` (verbatim):
@@ -75,7 +104,9 @@ verbatim to the user rather than retrying with a further-modified prompt.
 - When `nsfw` is **not** set, the negative prompt should also include content-suppressing terms:
   `nsfw, nude, nudity, explicit, sexual content`.
 - When `nsfw` **is** set, none of those suppressing terms should appear in the negative prompt —
-  an NSFW request should never have its own content echoed back as something to avoid.
+  an NSFW request should never have its own content echoed back as something to avoid. Check any
+  negative file you reuse from a SFW run: `build()` strips those five terms, but a hand-written
+  `clothed`/`dressed` would still be passed through.
 
 ## Writing the personality description when NSFW is set
 

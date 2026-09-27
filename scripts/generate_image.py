@@ -83,6 +83,19 @@ def _save_raw(data: bytes, fmt: str, out_path: Path) -> str:
     return str(out_path)
 
 
+def _workflow_checkpoint(cfg: dict) -> str | None:
+    """Checkpoint name the configured ComfyUI workflow loads, so prompt.build() can add the
+    tags a Pony-family model needs. Unreadable or absent workflow -> None (the backend's own
+    config check reports that problem properly)."""
+    path = cfg.get("comfyui_workflow")
+    if not path:
+        return None
+    try:
+        return prompt.checkpoint_from_workflow(json.loads(Path(path).read_text()))
+    except (OSError, ValueError):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate a profile image via a backend")
     parser.add_argument("--backend", required=True, choices=["chatgpt", "grok", "grok-cli", "comfyui", "mock"])
@@ -111,6 +124,7 @@ def main() -> int:
             nsfw=args.nsfw,
             style_preset=args.style_preset,
             backend=args.backend,
+            checkpoint=_workflow_checkpoint(cfg) if args.backend == "comfyui" else None,
         )
 
         spec = PromptSpec(

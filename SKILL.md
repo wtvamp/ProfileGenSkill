@@ -210,21 +210,27 @@ for backends that don't actually control their own output size.
 
 ## 7b. Generate the NSFW variant (optional)
 
-Only if the user asked for one in step 2. Run `generate_image.py` **again** with the same
-`--prompt-file`, the same `--style-preset`, **the same `--seed`** (pass step 7's returned `seed`
-explicitly — this is what makes the two pictures the same person rather than two strangers), plus
-`--nsfw`, writing to `<asset_dir>/<slug>-nsfw.png`:
+Only if the user asked for one in step 2. First write a **separate NSFW prompt file** as
+`references/prompting.md` ("NSFW subject text") describes: the same name, stated adult age,
+ethnicity, face and hair, with every clothing word and the office/role setting removed, and
+`waist-up portrait` in an intimate boudoir/bedroom setting instead. **Do not reuse the SFW prompt
+file** — clothing left in the prompt beats the NSFW clause and yields a clothed picture. Then run
+`generate_image.py` **again** with that file, the same `--style-preset`, **the same `--seed`**
+(pass step 7's returned `seed` explicitly — this is what makes the two pictures the same person
+rather than two strangers), plus `--nsfw`, writing to `<asset_dir>/<slug>-nsfw.png`:
 
 ```
-python3 scripts/generate_image.py --backend <backend> --prompt-file <prompt.txt> \
+python3 scripts/generate_image.py --backend <backend> --prompt-file <nsfw-prompt.txt> \
   [--negative-file <negative.txt>] --nsfw --seed <seed from step 7> \
   --out <asset_dir>/<slug>-nsfw.png [--style-preset "<short style clause>"] \
   [--workflow <asset_dir>/comfyui-workflow.json]
 ```
 
-`prompt.build()` appends the backend-appropriate NSFW clause and strips the content-suppressing
-terms from the negative prompt for this call only, so the same drafted prompt yields the two
-variants. Grok CLI ignores `--seed` entirely (see `references/backends.md`), so for that backend
+`prompt.build()` appends the backend-appropriate NSFW clause (concrete visual descriptors on
+ComfyUI), adds Pony rating tags when the workflow's checkpoint is Pony-family, and strips the
+content-suppressing terms from the negative prompt for this call only. **Look at the result
+before moving on**: if she is not visibly nude/topless, re-roll (a new seed is fine if the face
+still matches) rather than recording a clothed picture as `image_nsfw`. Grok CLI ignores `--seed` entirely (see `references/backends.md`), so for that backend
 tell the user the two pictures may not match closely.
 
 Hold onto this path — it becomes the profile's `image_nsfw` field in step 9. If this call fails
@@ -266,7 +272,8 @@ intermediate input (synthetic mode needs it directly; native mode still uses it 
 subject). Only fall back to the step 7 PNG path as `image` if this step was skipped entirely.
 
 If step 7b produced an NSFW variant, run `make_gif.py` a second time for it too (`--png
-<nsfw png> --out <asset_dir>/<slug>-nsfw.gif`, adding `--nsfw`), so toggling variants doesn't
+<nsfw png> --out <asset_dir>/<slug>-nsfw.gif`, adding `--nsfw` and passing the **NSFW** prompt
+file, so the video model is told she is nude and does not re-clothe her), so toggling variants doesn't
 switch between an animated picture and a static one. Use the same `--mode` result for both; if
 the second call fails, keep the still PNG as `image_nsfw` and tell the user that variant isn't
 animated.
