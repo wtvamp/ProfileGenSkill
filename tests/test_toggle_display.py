@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -280,14 +281,15 @@ def test_variant_switch_rewrites_image_and_body_picture(tmp_path):
     text = markdown_path.read_text(encoding="utf-8")
     fields = frontmatter.extract_frontmatter(text)
     assert (fields["image"], fields["image_sfw"], fields["image_nsfw"]) == (nsfw, sfw, nsfw)
-    assert f"![Vera Lux]({nsfw})" in text
-    assert f"![Vera Lux]({sfw})" not in text
+    # the body link is relative to the profile's own file (profiles/vera-lux/), not the root
+    assert f"![Vera Lux](../../{nsfw})" in text
+    assert f"![Vera Lux](../../{sfw})" not in text
 
     _toggle(tmp_path, "--variant", "toggle")
     text = markdown_path.read_text(encoding="utf-8")
     fields = frontmatter.extract_frontmatter(text)
     assert (fields["image"], fields["image_sfw"]) == (sfw, sfw)
-    assert f"![Vera Lux]({sfw})" in text
+    assert f"![Vera Lux](../../{sfw})" in text
     assert text.count("image_sfw:") == 1
 
 
@@ -347,3 +349,29 @@ def test_resolution_still_finds_both_pictures_after_the_swap(tmp_path):
     )
     assert variants.resolve(fields).path == write_result["image_nsfw_path"]
     assert variants.resolve(fields, "sfw").path == write_result["image_path"]
+
+
+def test_private_persona_body_link_resolves_from_its_own_file(tmp_path):
+    # .claude/persona/persona.md linking ".claude/persona/persona.png" broke every markdown
+    # preview: the renderer resolves the link against .claude/persona/, not the project root
+    _write_profile(tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "gitignored", with_nsfw=True)
+    markdown_path = tmp_path / ".claude" / "persona" / "persona.md"
+    fields = frontmatter.extract_frontmatter(markdown_path.read_text(encoding="utf-8"))
+    link = re.search(r"!\[Vera Lux\]\(([^)]+)\)", markdown_path.read_text(encoding="utf-8"))
+    assert (markdown_path.parent / link.group(1)).resolve() == (tmp_path / fields["image"]).resolve()
+
+
+def test_variant_switch_repairs_a_root_relative_body_link(tmp_path):
+    # profiles written before the body link went file-relative get fixed on their next switch
+    write_result = _write_profile(
+        tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True
+    )
+    markdown_path = Path(write_result["markdown_path"])
+    sfw, nsfw = write_result["image_path"], write_result["image_nsfw_path"]
+    text = markdown_path.read_text(encoding="utf-8")
+    markdown_path.write_text(text.replace(f"](../../{sfw})", f"]({sfw})"), encoding="utf-8")
+
+    _toggle(tmp_path, "--variant", "nsfw")
+    text = markdown_path.read_text(encoding="utf-8")
+    assert f"![Vera Lux](../../{nsfw})" in text
+    assert f"]({sfw})" not in text and f"]({nsfw})" not in text

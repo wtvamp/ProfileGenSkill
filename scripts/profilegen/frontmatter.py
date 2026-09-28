@@ -212,6 +212,7 @@ def set_active_image(
     *,
     replaces: tuple[str, ...] = (),
     image_sfw: str | None = None,
+    link: str | None = None,
     region: tuple[int, int] | None = None,
 ) -> str:
     """Point the persona's picture at ``path``: the top-level ``image:`` key and every markdown
@@ -224,6 +225,10 @@ def set_active_image(
     ``image_sfw``, when given and the target region has no ``image_sfw:`` key yet, is inserted
     directly after ``image:`` -- the one-time migration of a profile written before ``image``
     started tracking the selected variant, so the SFW path isn't lost when ``image`` moves off it.
+
+    ``link``, when given, is what the picture links are pointed at instead of ``path``: ``image:``
+    is relative to the project root, but a body link resolves against the file's own directory
+    (see ``storage.markdown_link``), so the two differ for any profile not at the root.
 
     ``region`` confines the edit exactly as for ``set_display_flags``. Raises ``ValueError`` if
     the region has no top-level ``image:`` key.
@@ -246,7 +251,7 @@ def set_active_image(
 
     def _link(match: re.Match) -> str:
         if match.group(2) in known:
-            return f"![{match.group(1)}]({path})"
+            return f"![{match.group(1)}]({link or path})"
         return match.group(0)
 
     segment = _MD_IMAGE_RE.sub(_link, segment)

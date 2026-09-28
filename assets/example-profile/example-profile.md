@@ -25,7 +25,7 @@ generation:
 
 # Ada Sterling
 
-![Ada Sterling](assets/example-profile/example-profile.png)
+![Ada Sterling](example-profile.png)
 
 
 ## Personality
