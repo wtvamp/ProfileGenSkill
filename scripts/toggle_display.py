@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from profilegen import discovery, frontmatter, variants  # noqa: E402
+from profilegen import discovery, frontmatter, storage, variants  # noqa: E402
 
 
 def _fail(message: str) -> None:
@@ -125,11 +125,19 @@ def main() -> None:
                     migrate_sfw = available[variants.SFW]
                 if persona.embedded:
                     region = frontmatter.block_span(new_text, persona.slug)
+                # Body links are matched in both forms: file-relative is what's written now, and
+                # root-relative is what profiles written before that carry -- rewriting those
+                # repairs their broken markdown preview on the first switch.
+                known = (*available.values(), str(persona.fields.get("image") or ""))
                 new_text = frontmatter.set_active_image(
                     new_text,
                     available[variant],
-                    replaces=(*available.values(), str(persona.fields.get("image") or "")),
+                    replaces=(
+                        *known,
+                        *(storage.markdown_link(persona.root, persona.markdown_path, p) for p in known),
+                    ),
                     image_sfw=migrate_sfw,
+                    link=storage.markdown_link(persona.root, persona.markdown_path, available[variant]),
                     region=region,
                 )
         except ValueError as e:

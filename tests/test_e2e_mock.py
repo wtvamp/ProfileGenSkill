@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -172,8 +173,10 @@ def test_full_offline_pipeline_with_mock_backend(tmp_path):
         return Path(p).resolve().relative_to(tmp_path.resolve()).as_posix()
     assert f'image_nsfw: "{rel(nsfw_image_result["path"])}"' in profile_text
     assert nsfw_image_result["path"] not in profile_text
-    # ...and the visible markdown picture is the SFW one, never the explicit variant
-    assert f"![Test Persona]({rel(gif_result['path'])})" in profile_text
+    # ...and the visible markdown picture is the SFW one, never the explicit variant, linked
+    # relative to the profile's own file so a markdown preview can find it
+    sfw_link = os.path.relpath(gif_result["path"], Path(write_result["markdown_path"]).parent)
+    assert f"![Test Persona]({Path(sfw_link).as_posix()})" in profile_text
 
     gitignore_path = tmp_path / ".gitignore"
     assert gitignore_path.exists()

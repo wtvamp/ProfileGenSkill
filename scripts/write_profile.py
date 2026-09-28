@@ -144,6 +144,11 @@ def _write(args: argparse.Namespace) -> None:
         if fields["display"]["variant"] == variants.NSFW:
             fields["image"] = fields["image_nsfw"]
 
+    # The body's picture link resolves against the markdown file's own directory, unlike the
+    # root-relative frontmatter keys.
+    planned_markdown = storage.plan_paths(args.root, slug, args.output, args.assets)["markdown_path"]
+    fields["image_link"] = storage.markdown_link(args.root, planned_markdown, fields["image"])
+
     try:
         if args.output == "claude-md":
             rendered = render.render_embedded(fields)

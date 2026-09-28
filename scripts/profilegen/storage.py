@@ -72,6 +72,23 @@ def gitignore_pattern_for(output: str, assets: str) -> str:
     return _PRIVATE_GITIGNORE_PATTERN if _is_private_reference(output, assets) else _GITIGNORE_PATTERN
 
 
+def markdown_link(root: str | Path, markdown_path: str | Path, image: str | None) -> str | None:
+    """``image`` -- recorded relative to ``root`` -- as a link target for a picture in the body of
+    ``markdown_path``.
+
+    A markdown renderer (a VS Code/GitHub preview) resolves ``![alt](target)`` against the file's
+    own directory, not the project root, so a root-relative target breaks the preview of every
+    profile that doesn't sit at the root -- ``.claude/persona/persona.md`` linking
+    ``.claude/persona/persona.gif`` pointed at ``.claude/persona/.claude/persona/persona.gif``.
+    The frontmatter keeps the root-relative path, which is what profile readers resolve.
+    Absolute paths and URLs are returned unchanged.
+    """
+    if not image or "://" in image or image.startswith("data:") or Path(image).is_absolute():
+        return image
+    base = Path(markdown_path).parent
+    return Path(os.path.relpath(Path(root) / image, base)).as_posix()
+
+
 def plan_paths(root: str | Path, slug: str, output: str, assets: str) -> dict:
     """Return the final markdown_path/asset_dir (and marker_key) for the given output/assets
     combo.
