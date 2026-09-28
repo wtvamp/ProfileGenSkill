@@ -7,6 +7,7 @@ Endpoints:
                                   types (the ones tests/fixtures/*.api.json actually use) --
                                   used to test check_config.py's live node-existence check
   POST /prompt                -> 200 {"prompt_id": "test-123"}
+  POST /upload/image          -> 200 {"name": <uploaded filename>, "subfolder": "", "type": "input"}
   GET  /history/test-123      -> 200 {"test-123": {"outputs": {"9": {"images": [...]}}}}
   GET  /view?...              -> 200 image bytes (Content-Type: image/png)
 """
@@ -112,9 +113,14 @@ class MockComfyUIHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         parsed = urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
-        _ = self.rfile.read(length)
+        body = self.rfile.read(length)
         if parsed.path == "/prompt":
             self._send_json({"prompt_id": PROMPT_ID})
+        elif parsed.path == "/upload/image":
+            marker = b'filename="'
+            start = body.index(marker) + len(marker)
+            name = body[start : body.index(b'"', start)].decode()
+            self._send_json({"name": name, "subfolder": "", "type": "input"})
         else:
             self._send_json({"error": "not found"}, status=404)
 

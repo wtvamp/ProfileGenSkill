@@ -17,6 +17,7 @@ Seed is set on every node that has a "seed" or "noise_seed" input, to
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import time
@@ -31,6 +32,7 @@ _SAMPLER_CLASSES = {"KSampler", "KSamplerAdvanced", "SamplerCustom"}
 _POSITIVE_TITLES = {"profilegen positive", "positive"}
 _NEGATIVE_TITLES = {"profilegen negative", "negative"}
 _LATENT_TITLE = "profilegen latent"
+_SOURCE_STILL_TITLE = "profilegen source still"
 _SEED_KEYS = ("seed", "noise_seed")
 
 
@@ -95,9 +97,27 @@ def _text_input_key(node: dict) -> str:
     return "text"
 
 
-def inject(workflow: dict, spec: PromptSpec) -> tuple[dict, dict]:
+def _find_source_still_node(workflow: dict) -> Optional[str]:
+    node_id = _find_by_title(workflow, {_SOURCE_STILL_TITLE})
+    if node_id is not None:
+        return node_id
+    for nid, node in workflow.items():
+        if node.get("class_type") == "LoadImage":
+            return nid
+    return None
+
+
+def inject(
+    workflow: dict, spec: PromptSpec, source_image_name: Optional[str] = None
+) -> tuple[dict, dict]:
     """Mutate a copy of ``workflow`` with the given PromptSpec. Returns (workflow, resolved)
-    where resolved is {positive_node, negative_node, seed_nodes, latent_node, seed_used}.
+    where resolved is {positive_node, negative_node, seed_nodes, latent_node, source_node,
+    seed_used}.
+
+    ``source_image_name`` is a filename already uploaded to the server's input folder. It
+    replaces the image on the "ProfileGen Source Still" node (else the first LoadImage). Leaving
+    it out keeps whatever the workflow hardcodes -- which is how every GIF built from a copy of
+    one persona's workflow started out as that persona and morphed into the new one.
     """
     wf = json.loads(json.dumps(workflow))  # deep copy
 
@@ -127,6 +147,10 @@ def inject(workflow: dict, spec: PromptSpec) -> tuple[dict, dict]:
         inputs["width"] = spec.width
         inputs["height"] = spec.height
 
+    source_node = _find_source_still_node(wf) if source_image_name else None
+    if source_node is not None:
+        wf[source_node].setdefault("inputs", {})["image"] = source_image_name
+
     seed_used = spec.seed if spec.seed is not None else random.getrandbits(32)
     seed_nodes: list[str] = []
     for node_id, node in wf.items():
@@ -141,6 +165,7 @@ def inject(workflow: dict, spec: PromptSpec) -> tuple[dict, dict]:
         "negative_node": negative_node,
         "seed_nodes": seed_nodes,
         "latent_node": latent_node,
+        "source_node": source_node,
         "output_node": _find_output_node(wf),
         "seed_used": seed_used,
     }
@@ -202,7 +227,13 @@ class ComfyUIBackend:
         url = url.rstrip("/")
 
         workflow = _load_workflow(workflow_path)
-        injected, resolved = inject(workflow, spec)
+        source_name = self._upload_source(url, spec.source_image) if spec.source_image else None
+        injected, resolved = inject(workflow, spec, source_name)
+        if source_name and resolved["source_node"] is None:
+            raise BackendError(
+                f"{workflow_path} has no LoadImage node to receive the source still; "
+                'title one "ProfileGen Source Still"'
+            )
 
         client_id = cfg.get("comfyui_client_id") or str(uuid.uuid4())
         resp = http.json_post(f"{url}/prompt", {}, {"prompt": injected, "client_id": client_id})
@@ -254,6 +285,18 @@ class ComfyUIBackend:
             height=spec.height,
             raw_meta={"resolved": resolved, "prompt_id": prompt_id},
         )
+
+    def _upload_source(self, url: str, data: bytes) -> str:
+        """Upload the still to the server's input folder under a content-addressed name, so two
+        personas can never collide on one filename and re-uploading the same still is a no-op."""
+        name = f"profilegen-{hashlib.sha256(data).hexdigest()[:16]}.png"
+        resp = http.multipart_post(
+            f"{url}/upload/image",
+            {"type": "input", "overwrite": "true"},
+            {"image": (name, data, "image/png")},
+        )
+        sub = resp.get("subfolder") or ""
+        return f"{sub}/{resp.get('name', name)}" if sub else resp.get("name", name)
 
     def generate_image(self, spec: PromptSpec) -> ImageResult:
         return self._run_workflow(self.cfg.get("comfyui_workflow"), spec, "images")

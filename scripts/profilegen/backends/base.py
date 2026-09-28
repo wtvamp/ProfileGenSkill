@@ -28,6 +28,9 @@ class PromptSpec:
     seed: Optional[int] = None
     width: int = 1024
     height: int = 1024
+    # The still an image-to-video workflow animates. Without it, a native GIF workflow
+    # animates whatever filename its LoadImage node happens to hardcode.
+    source_image: Optional[bytes] = None
 
 
 @dataclass

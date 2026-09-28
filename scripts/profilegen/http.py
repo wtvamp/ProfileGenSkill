@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any
 
 from .backends.base import BackendError
@@ -55,6 +56,41 @@ def get_bytes(url: str, headers: dict[str, str] | None = None, timeout: float = 
 
 def get_json(url: str, headers: dict[str, str] | None = None, timeout: float = DEFAULT_TIMEOUT) -> dict:
     raw = get_bytes(url, headers, timeout)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise BackendError(f"Invalid JSON response from {url}: {e}") from e
+
+
+def multipart_post(
+    url: str,
+    fields: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]],
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """POST multipart/form-data. ``files`` maps field name to (filename, bytes, content type)."""
+    boundary = uuid.uuid4().hex
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+        )
+    for name, (filename, data, ctype) in files.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+            f"Content-Type: {ctype}\r\n\r\n".encode()
+            + data
+            + b"\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n".encode())
+    req = urllib.request.Request(
+        url,
+        data=b"".join(parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with _urlopen(req, timeout) as resp:
+        raw = resp.read()
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:

@@ -85,6 +85,7 @@ def main() -> int:
                 negative=negative,
                 nsfw=args.nsfw,
                 seed=args.seed,
+                source_image=Path(args.png).read_bytes(),
             )
             result = backend.generate_gif(spec)
 
