@@ -73,7 +73,7 @@ def discover_personas(root: Path) -> list[DiscoveredPersona]:
 # CLAUDE.md names the *lead's* persona -- read on its own, that put the lead's face and name on
 # every member of every team. The member's own persona lives where profile-gen's `--output file`
 # writes one, keyed by the same name the team gave it: profiles/<name>/<name>.md (tracked) or
-# .profiles-assets/<name>/<name>.md (gitignored). a profile reader's orb resolver looks in exactly
+# .profiles-assets/<name>/<name>.md (gitignored). A profile reader's orb resolver looks in exactly
 # these two places for the same reason (CB-154), so one persona file serves both.
 _AGENT_NAME = re.compile(r"--agent-name(?:=|\s+)([A-Za-z0-9._-]+)")
 

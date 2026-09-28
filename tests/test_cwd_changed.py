@@ -52,7 +52,7 @@ def test_missing_payload_fields_do_nothing(tmp_path):
 
 
 def _home_with_persona(tmp_path: Path) -> Path:
-    # ~/CLAUDE.md declaring a persona of its own, as on a typical setup (Juniper).
+    # ~/CLAUDE.md declaring a persona of its own, as on a setup with a home-level default persona (Juniper).
     from test_discovery_nearest import _project
     _project(tmp_path, "Juniper", "persona")
     return tmp_path
