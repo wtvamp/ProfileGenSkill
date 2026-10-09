@@ -136,48 +136,97 @@ def owner_pid() -> int | None:
     return None
 
 
+def _ancestry(pid: int) -> "list[tuple[int, str, str]]":
+    """``(pid, tty, args)`` for ``pid`` and each of its parents, nearest first. POSIX only.
+
+    ``tty`` is ps's short form (``ttys001``) or ``??`` for none; ``args`` is the full command line,
+    which -- unlike ``comm`` -- still says what a process is *for* when the binary is shared (the
+    background-agent daemon's pty host is the same ``claude`` executable as everything else).
+    """
+    chain: "list[tuple[int, str, str]]" = []
+    for _ in range(12):
+        if pid <= 1:
+            break
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=,tty=,args=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            break
+        parts = out.split(None, 2)
+        if len(parts) < 2:
+            break
+        chain.append((pid, parts[1], parts[2] if len(parts) > 2 else ""))
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            break
+    return chain
+
+
+def _daemon_hosted() -> bool:
+    """True when this session runs inside Claude Code's background-agent daemon (``--bg``,
+    ``/background``, a claimed bg-spare): somewhere above it is the daemon's pty host.
+
+    Such a session has no terminal of its own. Its controlling tty belongs to the pty host, which
+    no terminal window shows, so there is nothing on screen an overlay could truthfully sit on.
+    """
+    if sys.platform.startswith("win"):
+        return False
+    owner = owner_pid()
+    if owner is None:
+        return False
+    return any("--bg-pty-host" in args for _, _, args in _ancestry(owner))
+
+
 def _active_tmux_pane() -> str | None:
-    """The tmux pane this call should be scoped to, found without trusting $TMUX_PANE.
+    """The tmux pane *this session* runs in, or None if it does not run in one.
 
-    $TMUX_PANE is only set when this process itself was started *inside* the tmux pane it should
-    act on. That's true for a plain foreground `claude` typed into a pane, but not for a session
-    served through Claude Code's background-agent daemon (`--bg`, `/background`, a bg-spare
-    worker) -- the daemon's worker pool has no tmux pane of its own to inherit one from, even
-    when the *command that reached it* was typed into a real tmux pane. Trusting the env var in
-    that case doesn't fail loudly, it just silently returns None every time, which is what made
-    this look like "the overlay stopped respecting tmux" rather than "this session was never
-    going to have $TMUX_PANE set in the first place".
+    $TMUX_PANE first: a plain foreground `claude` typed into a pane inherits it, and it is free.
 
-    So: prefer the env var when it's actually there (the common case, and free). Otherwise ask
-    the tmux server itself, which knows what's attached and active regardless of who's asking --
-    the same fix and the same reasoning as watch-ci-in-tmux.sh's tmux-pane detection.
+    Without it, the pane is found by asking which pane's tty this session (or one of its parents)
+    is attached to -- the tty is a fact about this process, so the answer can only ever be this
+    session's own pane.
+
+    What this deliberately does NOT do any more is fall back to "whichever pane is active in the
+    window currently on screen". That used to be the fallback, for sessions served through the
+    background-agent daemon, which never have $TMUX_PANE -- and it is wrong by construction: the
+    pane on screen is whatever the user happens to be looking at, which is almost always some
+    *other* session. Found live on 9 Oct 2026: a daemon-hosted session in one project started
+    while the user was looking at a second project's tmux window, so its overlay was pinned to the
+    second project's pane (``--tmux-pane %0``) and showed the wrong persona over it -- and because
+    pid files are keyed by pane, launching it first *killed* the second project's own overlay.
+    A daemon-hosted session has no pane of its own; None is the true answer, and launch() then
+    declines to draw anything rather than guess.
     """
     pane = os.environ.get("TMUX_PANE", "")
     if pane:
         return pane
 
+    if sys.platform.startswith("win"):
+        return None
     tmux_bin = shutil.which("tmux")
     if not tmux_bin:
         return None
+    owner = owner_pid()
+    if owner is None:
+        return None
+    ttys = {f"/dev/{tty}" for _, tty, _ in _ancestry(owner) if tty not in ("", "?", "??")}
+    if not ttys:
+        return None
     try:
         out = subprocess.run(
-            [tmux_bin, "list-panes", "-a", "-F",
-             "#{session_attached} #{window_active} #{pane_active} #{pane_id}"],
+            [tmux_bin, "list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"],
             capture_output=True, text=True, timeout=5,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
 
-    # All three, not just session_attached + pane_active: a tmux session commonly has more than
-    # one window (a split made for something else, an old window left open), and each window
-    # remembers its own "last active pane" even while a different window is the one actually on
-    # screen -- so pane_active alone is ambiguous the moment there's a second window, and matches
-    # whichever happens to come first in list-panes' output rather than the one truly visible.
-    # window_active is what actually says "this is the window the client has up right now".
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) == 4 and parts[0] == "1" and parts[1] == "1" and parts[2] == "1":
-            return parts[3]
+        if len(parts) == 2 and parts[0] in ttys:
+            return parts[1]
     return None
 
 
@@ -335,6 +384,13 @@ def launch(
     if binary is None:
         return False
 
+    # A daemon-hosted session with no pane of its own has no screen to draw on: its tty is the
+    # daemon's pty host, which no terminal window shows, so the overlay would fall back to floating
+    # over whichever terminal window is frontmost -- another session's. Decline before stop(), so
+    # nothing that belongs to anybody else is touched either. See _active_tmux_pane().
+    if not _active_tmux_pane() and _daemon_hosted():
+        return False
+
     stop()
 
     if sys.platform.startswith("win"):
@@ -350,11 +406,7 @@ def launch(
 
     # Tell the overlay which tmux pane it belongs to, so it hides when that tmux window isn't the
     # one on screen -- tmux windows share a single terminal window, so the overlay can't work this
-    # out from the terminal alone. See _active_tmux_pane()'s own comment for why this can't just
-    # read $TMUX_PANE: a daemon-hosted session (--bg, /background) never has it set even when the
-    # command that reached it came from a real tmux pane, and without it the overlay silently
-    # falls back to targeting the *whole* terminal window -- still visible, but no longer clipped
-    # to (or hidden by) the one pane it's actually supposed to belong to.
+    # out from the terminal alone. Only ever this session's own pane: see _active_tmux_pane().
     pane = _active_tmux_pane()
     if pane:
         tmux_bin = shutil.which("tmux")
