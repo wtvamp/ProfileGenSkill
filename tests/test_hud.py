@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from profilegen import hud  # noqa: E402
 
+_real_daemon_hosted = hud._daemon_hosted
+
 
 @pytest.fixture(autouse=True)
 def _isolated_cache(tmp_path, monkeypatch):
@@ -24,6 +26,10 @@ def _isolated_cache(tmp_path, monkeypatch):
     # tests that care about a specific pane set $TMUX_PANE directly, which _active_tmux_pane()
     # still checks first and this default never overrides.
     monkeypatch.setattr(hud.shutil, "which", lambda name: None)
+    # launch() asks whether this session is daemon-hosted by walking the real process tree, which
+    # would make every launch test depend on how the suite itself was started. The rule has its
+    # own tests below, against the real function.
+    monkeypatch.setattr(hud, "_daemon_hosted", lambda: False)
 
 
 def test_is_supported_on_macos_requires_swiftc(monkeypatch):
@@ -101,51 +107,149 @@ def test_active_tmux_pane_prefers_the_env_var(monkeypatch):
     assert hud._active_tmux_pane() == "%15"
 
 
-def test_active_tmux_pane_asks_the_server_when_env_var_is_absent(monkeypatch):
-    # A session served through Claude Code's background-agent daemon never has $TMUX_PANE set,
-    # even when the command that reached it came from a real tmux pane -- see _active_tmux_pane's
-    # own comment. Falling back to the server is what makes the overlay work for that case too.
+# The real process tree and tmux server from 9 Oct 2026, when a daemon-hosted session in one
+# project had its overlay pinned to a *different* project's pane: %0 is project B's
+# pane (its claude runs on ttys001), and the window on screen at the time.
+LIVE_PANES = "/dev/ttys001 %0\n/dev/ttys003 %3\n/dev/ttys006 %4\n"
+
+
+def _fake_tmux(monkeypatch, panes, ancestry):
     monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
+    monkeypatch.setattr(hud, "owner_pid", lambda: ancestry[0][0] if ancestry else None)
+    monkeypatch.setattr(hud, "_ancestry", lambda pid: ancestry)
 
     class FakeResult:
-        stdout = "0 1 0 %3\n1 1 0 %4\n1 1 1 %5\n"
+        stdout = panes
 
     def fake_run(args, **kwargs):
         assert args[0] == "/usr/bin/tmux"
-        assert args[1:4] == ["list-panes", "-a", "-F"]
+        assert args[1:5] == ["list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"]
         return FakeResult()
 
     monkeypatch.setattr(hud.subprocess, "run", fake_run)
-    assert hud._active_tmux_pane() == "%5"
 
 
-def test_active_tmux_pane_ignores_a_pane_active_in_a_window_not_on_screen(monkeypatch):
-    # Found live: a tmux session commonly has more than one window (a split made for something
-    # else, an old window left open), and each window remembers its own "last active pane" even
-    # while a different window is the one actually on screen. %4 here is pane_active in its own
-    # (not-current) window -- session_attached + pane_active alone would have matched it first and
-    # pinned the overlay to a window nobody is looking at. Only %6, active in the window that is
-    # actually current, is correct.
-    monkeypatch.delenv("TMUX_PANE", raising=False)
-    monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
-
-    class FakeResult:
-        stdout = "1 0 1 %4\n1 1 0 %5\n1 1 1 %6\n"
-
-    monkeypatch.setattr(hud.subprocess, "run", lambda *a, **kw: FakeResult())
-    assert hud._active_tmux_pane() == "%6"
+def test_active_tmux_pane_finds_the_sessions_own_pane_by_tty(monkeypatch):
+    # $TMUX_PANE scrubbed, but the session still runs in a pane: its tty says which one, whatever
+    # window happens to be on screen.
+    _fake_tmux(monkeypatch, LIVE_PANES, [(24709, "ttys003", "claude"), (15939, "ttys003", "-zsh")])
+    assert hud._active_tmux_pane() == "%3"
 
 
-def test_active_tmux_pane_none_when_no_session_attached(monkeypatch):
-    monkeypatch.delenv("TMUX_PANE", raising=False)
-    monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
-
-    class FakeResult:
-        stdout = "0 1 0 %3\n0 1 1 %4\n"  # every session detached -- nothing to target
-
-    monkeypatch.setattr(hud.subprocess, "run", lambda *a, **kw: FakeResult())
+def test_active_tmux_pane_never_borrows_the_pane_on_screen(monkeypatch):
+    # Regression, 9 Oct 2026. A session in project A (pid 7573) was served by the background-agent
+    # daemon: its tty is the pty host's, which is no tmux pane. The old fallback returned the
+    # active pane of the window on screen -- %0, project B's -- so project A's persona
+    # was drawn over project B's pane and project B's own overlay was killed.
+    _fake_tmux(monkeypatch, LIVE_PANES, [
+        (7573, "ttys007", "/Users/u/.local/share/claude/versions/2.1.296 --session-id 12ae435c --resume x.jsonl"),
+        (7411, "??", "claude --bg-pty-host /tmp/cc-daemon-501/x/spare/97d094ff.pty.sock 214 42 -- claude"),
+        (23356, "??", "/Users/u/.local/bin/claude daemon run --json-path /Users/u/.claude/daemon.json"),
+    ])
     assert hud._active_tmux_pane() is None
+
+
+def test_active_tmux_pane_none_without_an_owner_or_a_tty(monkeypatch):
+    _fake_tmux(monkeypatch, LIVE_PANES, [])
+    assert hud._active_tmux_pane() is None
+
+    _fake_tmux(monkeypatch, LIVE_PANES, [(500, "??", "claude")])
+    assert hud._active_tmux_pane() is None
+
+
+def test_active_tmux_pane_none_on_windows(monkeypatch):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(hud.sys, "platform", "win32")
+    monkeypatch.setattr(hud.shutil, "which", lambda name: "C:/tmux.exe")
+    monkeypatch.setattr(
+        hud.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("asked tmux"))
+    )
+    assert hud._active_tmux_pane() is None
+
+
+def test_ancestry_walks_parents_with_tty_and_args(monkeypatch):
+    table = {
+        7573: "7411 ttys007 /x/claude --session-id 12ae435c --resume a b.jsonl",
+        7411: "23356 ?? claude --bg-pty-host /tmp/s.sock 214 42 -- claude",
+        23356: "1 ?? claude daemon run",
+    }
+
+    class FakeResult:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(args, **kwargs):
+        assert args[:3] == ["ps", "-o", "ppid=,tty=,args="]
+        return FakeResult(table.get(int(args[-1]), ""))
+
+    monkeypatch.setattr(hud.subprocess, "run", fake_run)
+    assert hud._ancestry(7573) == [
+        (7573, "ttys007", "/x/claude --session-id 12ae435c --resume a b.jsonl"),
+        (7411, "??", "claude --bg-pty-host /tmp/s.sock 214 42 -- claude"),
+        (23356, "??", "claude daemon run"),
+    ]
+
+
+def test_ancestry_stops_on_a_failed_or_malformed_ps(monkeypatch):
+    def raise_oserror(*a, **kw):
+        raise OSError("no ps")
+
+    monkeypatch.setattr(hud.subprocess, "run", raise_oserror)
+    assert hud._ancestry(42) == []
+
+    class Garbage:
+        stdout = "nonsense"
+
+    monkeypatch.setattr(hud.subprocess, "run", lambda *a, **kw: Garbage())
+    assert hud._ancestry(42) == []
+
+    class BadParent:
+        stdout = "x ttys001"
+
+    monkeypatch.setattr(hud.subprocess, "run", lambda *a, **kw: BadParent())
+    assert hud._ancestry(42) == [(42, "ttys001", "")]
+    assert hud._ancestry(1) == []
+
+
+def test_daemon_hosted_sees_the_pty_host_above_the_session(monkeypatch):
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
+    monkeypatch.setattr(hud, "owner_pid", lambda: 7573)
+    monkeypatch.setattr(hud, "_ancestry", lambda pid: [
+        (7573, "ttys007", "claude --session-id 12ae435c"),
+        (7411, "??", "claude --bg-pty-host /tmp/s.sock 214 42 -- claude"),
+    ])
+    assert _real_daemon_hosted() is True
+
+    monkeypatch.setattr(hud, "_ancestry", lambda pid: [(36953, "ttys001", "claude --resume 05742b26")])
+    assert _real_daemon_hosted() is False
+
+    monkeypatch.setattr(hud, "owner_pid", lambda: None)
+    assert _real_daemon_hosted() is False
+
+    monkeypatch.setattr(hud.sys, "platform", "win32")
+    assert _real_daemon_hosted() is False
+
+
+def test_launch_declines_a_daemon_hosted_session_without_touching_other_overlays(monkeypatch, tmp_path):
+    # The other half of the 9 Oct regression: even with no pane, launching used to stop() first --
+    # and with the borrowed pane, that killed project B's own overlay (hud-0.pid).
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_active_tmux_pane", lambda: None)
+    monkeypatch.setattr(hud, "_daemon_hosted", lambda: True)
+    (tmp_path / "hud-0.pid").write_text("31337")
+    (tmp_path / "hud-default.pid").write_text("31338")
+    monkeypatch.setattr(hud.os, "kill", lambda *a: (_ for _ in ()).throw(AssertionError("killed")))
+    monkeypatch.setattr(
+        hud.subprocess, "Popen", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("launched"))
+    )
+
+    assert hud.launch("/tmp/ada.gif", "Ada") is False
+    assert (tmp_path / "hud-0.pid").read_text() == "31337"
+    assert (tmp_path / "hud-default.pid").read_text() == "31338"
 
 
 def test_active_tmux_pane_none_when_tmux_not_installed(monkeypatch):
@@ -159,7 +263,10 @@ def test_active_tmux_pane_none_when_tmux_not_installed(monkeypatch):
 
 def test_active_tmux_pane_none_when_the_server_call_fails(monkeypatch):
     monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(hud.sys, "platform", "darwin")
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
+    monkeypatch.setattr(hud, "owner_pid", lambda: 24709)
+    monkeypatch.setattr(hud, "_ancestry", lambda pid: [(24709, "ttys003", "claude")])
 
     def raise_oserror(*a, **kw):
         raise OSError("no server running")
