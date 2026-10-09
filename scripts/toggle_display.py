@@ -5,7 +5,8 @@ Discovers personas the same way show_profile.py does (via the profile-gen marker
 nearest CLAUDE.md at or above <root> that has any) and edits whichever markdown file that persona's content actually lives in --
 persona.md/profiles/<slug>/<slug>.md for claude-md-ref, or the right slug's own marker-delimited
 region inside CLAUDE.md itself for a fully-embedded (claude-md) persona. Only the display: block
-is touched; nothing else in the file is regenerated or reformatted.
+is touched; nothing else in the file is regenerated or reformatted. A `.claude/PERSONA.MD` with
+the same `name` (the persona file some companion apps read) is edited alongside it -- see `_twins`.
 
 At least one of --image/--name/--autostart/--variant is required. --image/--name control what is
 drawn; --autostart controls whether a SessionStart hook shows this persona on its own, which is a
@@ -36,6 +37,40 @@ from profilegen import discovery, frontmatter, storage, variants  # noqa: E402
 def _fail(message: str) -> None:
     print(json.dumps({"error": message}))
     sys.exit(1)
+
+
+def _twins(personas: list) -> list:
+    """`.claude/PERSONA.MD` files that describe a persona already in `personas`.
+
+    Some companion apps read their persona from `.claude/PERSONA.MD`, a file the CLAUDE.md marker block
+    knows nothing about -- so one persona can live in two files and a toggle of the marked one
+    leaves the one the app reads showing the old picture. A twin is matched by name, and only
+    when it is a different file from one already being edited.
+    """
+    seen = {p.markdown_path.resolve() for p in personas}
+    twins = []
+    for persona in personas:
+        if persona.embedded:
+            continue
+        directory = persona.root / ".claude"
+        try:
+            candidates = [c for c in directory.iterdir() if c.name.lower() == "persona.md"]
+        except OSError:
+            continue
+        for candidate in candidates:
+            if candidate.resolve() in seen:
+                continue
+            fields = discovery._load_markdown_fields(candidate)
+            if not fields or fields.get("name") != persona.fields.get("name"):
+                continue
+            seen.add(candidate.resolve())
+            twins.append(
+                discovery.DiscoveredPersona(
+                    fields.get("slug") or persona.slug, fields, candidate,
+                    embedded=False, root=persona.root,
+                )
+            )
+    return twins
 
 
 def main() -> None:
@@ -75,6 +110,8 @@ def main() -> None:
     if not personas:
         _fail("no persona found (is CLAUDE.md missing a profile-gen block, or --slug wrong?)")
         return
+
+    personas = [*personas, *_twins(personas)]
 
     image = (args.image == "on") if args.image else None
     name = (args.name == "on") if args.name else None

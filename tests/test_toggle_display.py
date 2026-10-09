@@ -375,3 +375,41 @@ def test_variant_switch_repairs_a_root_relative_body_link(tmp_path):
     text = markdown_path.read_text(encoding="utf-8")
     assert f"![Vera Lux](../../{nsfw})" in text
     assert f"]({sfw})" not in text and f"]({nsfw})" not in text
+
+
+def test_variant_switch_also_updates_a_claude_persona_md_twin(tmp_path):
+    write_result = _write_profile(
+        tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True
+    )
+    sfw, nsfw = write_result["image_path"], write_result["image_nsfw_path"]
+    twin = tmp_path / ".claude" / "PERSONA.MD"
+    twin.parent.mkdir(exist_ok=True)
+    twin.write_text(
+        "---\nschema_version: 1\nname: \"Vera Lux\"\nslug: \"vera\"\n"
+        f"image: \"{sfw}\"\nimage_sfw: \"{sfw}\"\nimage_nsfw: \"{nsfw}\"\n"
+        f"display:\n  variant: sfw\n---\n\n![Vera Lux]({sfw})\n",
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / ".claude" / "OTHER" / "persona.md"
+
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"], cwd=REPO_ROOT
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    text = twin.read_text(encoding="utf-8")
+    fields = frontmatter.extract_frontmatter(text)
+    assert fields["image"] == nsfw
+    assert fields["display"]["variant"] == "nsfw"
+    assert f"![Vera Lux](../{nsfw})" in text
+    assert not unrelated.exists()
+
+
+def test_a_persona_md_with_a_different_name_is_left_alone(tmp_path):
+    _write_profile(tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked", with_nsfw=True)
+    other = tmp_path / ".claude" / "PERSONA.MD"
+    other.parent.mkdir(exist_ok=True)
+    body = '---\nschema_version: 1\nname: "Somebody Else"\nimage: "x.png"\n---\n'
+    other.write_text(body, encoding="utf-8")
+
+    _run(["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"], cwd=REPO_ROOT)
+    assert other.read_text(encoding="utf-8") == body
