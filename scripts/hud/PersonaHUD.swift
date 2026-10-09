@@ -312,9 +312,14 @@ final class Controller: NSObject {
     let opts: Options
     let panel: NSPanel
     let view: HUDView
+    // The tmux client tty this overlay is pinned to: starts as --tty, then follows focus. See
+    // currentTTY().
+    var tty: String
+    var ttyCheckedAt = Date.distantPast
 
     init(opts: Options) {
         self.opts = opts
+        tty = opts.tty
         let image = opts.imagePath.isEmpty ? nil : NSImage(contentsOfFile: opts.imagePath)
         // Starts at the maximum; the first tick shrinks it to fit before it's ever shown.
         view = HUDView(image: image, name: opts.name, avatar: opts.avatar)
@@ -345,6 +350,40 @@ final class Controller: NSObject {
     struct WindowLookup {
         var frame: CGRect
         var isFrontmost: Bool
+    }
+
+    /// Under tmux, the tty of the client the user is looking at, re-asked about once a second.
+    ///
+    /// Several tmux clients can be attached to the same session from different iTerm2 windows (a
+    /// stale `tmux attach` left in a background window, say), and the one the user is looking at
+    /// changes as they switch windows -- so the --tty resolved at launch goes stale. Same choice
+    /// as hud.py's _pick_client(): the focused client, else the most recently active one. Keeps
+    /// the last answer when tmux can't be asked.
+    func currentTTY() -> String {
+        guard !opts.tmuxPane.isEmpty, !opts.tmuxBin.isEmpty,
+              Date().timeIntervalSince(ttyCheckedAt) >= 1 else { return tty }
+        ttyCheckedAt = Date()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: opts.tmuxBin)
+        process.arguments = ["list-clients", "-t", opts.tmuxPane,
+                             "-F", "#{client_flags} #{client_activity} #{client_tty}"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return tty }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        var best: (Int, Int)? = nil
+        for line in (String(data: data, encoding: .utf8) ?? "").split(separator: "\n") {
+            let parts = line.split(separator: " ")
+            guard parts.count == 3, let activity = Int(parts[1]) else { continue }
+            let rank = (parts[0].split(separator: ",").contains("focused") ? 1 : 0, activity)
+            if best == nil || rank > best! {
+                best = rank
+                tty = String(parts[2])
+            }
+        }
+        return tty
     }
 
     func windowFrame(forTTY tty: String) -> WindowLookup? {
@@ -500,7 +539,7 @@ final class Controller: NSObject {
         }
 
         let quartz: CGRect
-        if opts.ownerName == "iTerm2", let lookup = windowFrame(forTTY: opts.tty) {
+        if opts.ownerName == "iTerm2", let lookup = windowFrame(forTTY: currentTTY()) {
             // Two iTerm2 windows can occupy nearly identical screen bounds (one maximized behind
             // another) -- "iTerm2 is frontmost" alone can't tell those apart, only this can.
             guard lookup.isFrontmost else {

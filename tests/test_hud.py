@@ -549,13 +549,53 @@ def test_controlling_tty_tmux_uses_client_tty(monkeypatch):
     monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
 
     def fake_run(args, **kwargs):
-        if "display-message" in args:
-            return types.SimpleNamespace(stdout="mysession\n")
-        assert args == ["/usr/bin/tmux", "list-clients", "-t", "mysession", "-F", "#{client_tty}"]
-        return types.SimpleNamespace(stdout="/dev/ttys010\n")
+        assert args == ["/usr/bin/tmux", "list-clients", "-t", "%3", "-F", hud.CLIENT_FORMAT]
+        return types.SimpleNamespace(stdout="attached,focused,UTF-8 1791585508 /dev/ttys010\n")
 
     monkeypatch.setattr(hud.subprocess, "run", fake_run)
     assert hud._controlling_tty("%3") == "/dev/ttys010"
+
+
+def test_controlling_tty_prefers_the_focused_client_over_the_first(monkeypatch):
+    # Regression, 9 Oct 2026: a day-old `tmux attach` in a background iTerm2 window was listed
+    # first, and every overlay was pinned to it instead of the window being looked at.
+    monkeypatch.setattr(hud.shutil, "which", lambda name: "/usr/bin/tmux")
+    listing = (
+        "attached,UTF-8 1791584543 /dev/ttys004\n"
+        "attached,focused,UTF-8 1791585508 /dev/ttys010\n"
+    )
+    monkeypatch.setattr(
+        hud.subprocess, "run", lambda args, **kw: types.SimpleNamespace(stdout=listing)
+    )
+    assert hud._controlling_tty("%3") == "/dev/ttys010"
+
+
+def test_pick_client_without_focus_takes_the_most_recently_active():
+    listing = (
+        "attached,UTF-8 1791585900 /dev/ttys004\n"
+        "attached,UTF-8 1791585508 /dev/ttys010\n"
+    )
+    assert hud._pick_client(listing) == "/dev/ttys004"
+
+
+def test_pick_client_focus_beats_more_recent_activity():
+    listing = (
+        "attached,UTF-8 1791589999 /dev/ttys004\n"
+        "attached,focused,UTF-8 1791585508 /dev/ttys010\n"
+    )
+    assert hud._pick_client(listing) == "/dev/ttys010"
+
+
+def test_pick_client_ignores_junk_and_handles_empty():
+    assert hud._pick_client("") is None
+    assert hud._pick_client("garbage\nattached,UTF-8 notanumber /dev/ttys001\n") is None
+
+
+def test_swift_overlay_follows_focus_with_the_same_query():
+    # The overlay re-resolves its tty as focus moves; it must ask tmux exactly what hud.py asks.
+    swift = _swift_source()
+    assert hud.CLIENT_FORMAT in swift
+    assert "windowFrame(forTTY: currentTTY())" in swift
 
 
 def test_launch_passes_avatar_bounds_by_default(monkeypatch, tmp_path):

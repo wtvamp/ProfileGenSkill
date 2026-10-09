@@ -230,6 +230,35 @@ def _active_tmux_pane() -> str | None:
     return None
 
 
+# `list-clients -t` takes a pane id as readily as a session name, resolving it to that pane's session.
+# PersonaHUD.swift runs the same query with the same format, so the two must agree.
+CLIENT_FORMAT = "#{client_flags} #{client_activity} #{client_tty}"
+
+
+def _pick_client(listing: str) -> str | None:
+    """The tty of the client the user is actually looking at, from `list-clients -F CLIENT_FORMAT`.
+
+    The focused client if there is one, else the most recently active. Taking the first line, as
+    this used to, picks whichever client attached first -- found live on 9 Oct 2026, where a
+    day-old `tmux attach` in a background iTerm2 window was listed ahead of the focused one, and
+    every persona's overlay was pinned to the window nobody was looking at.
+    """
+    best: "tuple[bool, int] | None" = None
+    chosen = None
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        flags, activity, tty = parts
+        try:
+            rank = ("focused" in flags.split(","), int(activity))
+        except ValueError:
+            continue
+        if best is None or rank > best:
+            best, chosen = rank, tty
+    return chosen
+
+
 def _controlling_tty(pane: str | None) -> str | None:
     """The /dev/ttyNNN of the iTerm2 window hosting this session.
 
@@ -242,24 +271,21 @@ def _controlling_tty(pane: str | None) -> str | None:
     allocates a fresh one per pane), so the pane's own controlling tty is useless here -- we ask
     tmux which client is attached to the pane's session and use that client's tty instead.
     Outside tmux, the owning process's own controlling tty already is the iTerm2 window's tty.
+
+    More than one client can be attached to the same session (a stale `tmux attach` left open in
+    another iTerm2 window, say), so which one is picked matters -- see _pick_client(). This is
+    only the starting value: the overlay re-resolves it itself as focus moves between windows.
     """
     tmux_bin = shutil.which("tmux")
     if pane and tmux_bin:
         try:
-            session = subprocess.run(
-                [tmux_bin, "display-message", "-pt", pane, "-F", "#{session_name}"],
-                capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
-            if not session:
-                return None
             out = subprocess.run(
-                [tmux_bin, "list-clients", "-t", session, "-F", "#{client_tty}"],
+                [tmux_bin, "list-clients", "-t", pane, "-F", CLIENT_FORMAT],
                 capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
+            ).stdout
         except (OSError, subprocess.SubprocessError):
             return None
-        tty = out.splitlines()[0].strip() if out else ""
-        return tty or None
+        return _pick_client(out)
 
     pid = owner_pid()
     if pid is None:
