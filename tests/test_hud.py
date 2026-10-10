@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from profilegen import hud  # noqa: E402
 
+_real_pane_overlays = hud._pane_overlays
+
 _real_daemon_hosted = hud._daemon_hosted
 
 
@@ -30,6 +32,10 @@ def _isolated_cache(tmp_path, monkeypatch):
     # would make every launch test depend on how the suite itself was started. The rule has its
     # own tests below, against the real function.
     monkeypatch.setattr(hud, "_daemon_hosted", lambda: False)
+    # stop() also sweeps real running overlays pinned to the pane by their --tmux-pane argument --
+    # left live, a test setting $TMUX_PANE would SIGTERM a real overlay on that pane. The sweep
+    # has its own tests below, against _real_pane_overlays with a fake `ps`.
+    monkeypatch.setattr(hud, "_pane_overlays", lambda pane: [])
 
 
 def test_is_supported_on_macos_requires_swiftc(monkeypatch):
@@ -733,3 +739,89 @@ def test_card_radius_is_concentric_with_the_tile():
     swift = _swift_source()
     assert "tileRadius(forAvatar: avatar) + padding(forAvatar: avatar)" in swift
     assert 'Card(width, height, m["radius"] + m["pad"])' in _windows_source()
+
+
+_PS = (
+    "  101 /Users/u/.cache/profile-gen/persona-hud --avatar 48 --name Ada --tmux-pane %29 --tmux-bin /usr/bin/tmux\n"
+    "  102 /Users/u/.cache/profile-gen/persona-hud --name Ada --tmux-pane %29 --tty /dev/ttys001\n"
+    "  103 /Users/u/.cache/profile-gen/persona-hud --name Bo --tmux-pane %2 --tmux-bin /usr/bin/tmux\n"
+    "  104 /usr/bin/vim notes-about --tmux-pane %29\n"
+    "  105 /Users/u/.cache/profile-gen/persona-hud --name Cy --tmux-pane %290\n"
+)
+
+
+def test_pane_overlays_finds_every_overlay_on_the_pane_and_nothing_else(monkeypatch):
+    # Regression, 10 Oct 2026: two launches racing left four copies of one persona on one pane,
+    # of which the pid file knew only the last. Other panes (%2, %290) and other programs are
+    # never matched.
+    monkeypatch.setattr(
+        hud.subprocess, "run", lambda args, **kw: types.SimpleNamespace(stdout=_PS)
+    )
+    assert _real_pane_overlays("%29") == [101, 102]
+    assert _real_pane_overlays("%2") == [103]
+
+
+def test_pane_overlays_needs_a_pane(monkeypatch):
+    monkeypatch.setattr(
+        hud.subprocess, "run", lambda args, **kw: pytest.fail("ps must not run without a pane")
+    )
+    assert _real_pane_overlays(None) == []
+
+
+def test_stop_kills_the_pid_file_overlay_and_any_orphans(monkeypatch, tmp_path):
+    monkeypatch.setenv("TMUX_PANE", "%29")
+    (tmp_path / "hud-29.pid").write_text("103")
+    monkeypatch.setattr(hud, "_pane_overlays", lambda pane: [101, 102] if pane == "%29" else [])
+    killed = []
+    monkeypatch.setattr(hud.os, "kill", lambda pid, sig: killed.append(pid))
+
+    assert hud.stop() is True
+    assert sorted(killed) == [101, 102, 103]
+    assert not (tmp_path / "hud-29.pid").exists()
+
+
+def test_launch_stops_and_starts_inside_the_pane_lock(monkeypatch, tmp_path):
+    binary = tmp_path / "persona-hud"
+    binary.touch()
+    monkeypatch.setattr(hud, "ensure_built", lambda: binary)
+    monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
+    monkeypatch.setattr(hud, "owner_pid", lambda: None)
+    events = []
+
+    class Lock:
+        def __enter__(self):
+            events.append("lock")
+
+        def __exit__(self, *exc):
+            events.append("unlock")
+
+    monkeypatch.setattr(hud, "_pane_lock", Lock)
+    monkeypatch.setattr(hud, "stop", lambda: events.append("stop"))
+    monkeypatch.setattr(
+        hud.subprocess, "Popen",
+        lambda args, **kw: events.append("start") or types.SimpleNamespace(pid=7),
+    )
+
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    assert events == ["lock", "stop", "start", "unlock"]
+    assert (tmp_path / "hud-default.pid").read_text() == "7"
+
+
+def test_pane_lock_serialises_two_holders(tmp_path):
+    import threading
+
+    order = []
+
+    def hold(tag):
+        with hud._pane_lock():
+            order.append(tag + "-in")
+            threading.Event().wait(0.2)
+            order.append(tag + "-out")
+
+    threads = [threading.Thread(target=hold, args=(t,)) for t in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # never interleaved: whoever got in first got out before the other got in
+    assert order[0][0] == order[1][0] and order[2][0] == order[3][0]

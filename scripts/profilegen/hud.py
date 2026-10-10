@@ -14,6 +14,7 @@ there's no checked-in binary and no build step for the user to run.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import signal
@@ -378,19 +379,75 @@ def stop() -> bool:
     down the personas of other sessions running in other tmux windows.
     """
     pid_file = _pid_file()
+    pids = set(_pane_overlays(_active_tmux_pane()))
     try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
+        pids.add(int(pid_file.read_text(encoding="utf-8").strip()))
     except (OSError, ValueError):
-        return False
+        pass
 
     stopped = False
-    try:
-        os.kill(pid, signal.SIGTERM)
-        stopped = True
-    except OSError:
-        pass  # already gone
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped = True
+        except OSError:
+            pass  # already gone
     pid_file.unlink(missing_ok=True)
     return stopped
+
+
+def _pane_overlays(pane: str | None) -> "list[int]":
+    """PIDs of every running overlay pinned to ``pane``, whether or not the pid file knows them.
+
+    The pid file only ever names the last overlay launched for a pane. One that lost track of an
+    earlier one -- two launches racing, as before _pane_lock() existed, left four copies of one
+    persona stacked on a single pane on 10 Oct 2026 -- would otherwise stay on screen until its
+    session exited. Matched on this pane's own --tmux-pane argument, so other panes' overlays are
+    never touched. POSIX only; without a pane there is nothing to match on.
+    """
+    if not pane or sys.platform.startswith("win"):
+        return []
+    try:
+        out = subprocess.run(
+            ["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or Path(parts[1]).name != BINARY.name:
+            continue
+        args = parts[2:]
+        if any(a == "--tmux-pane" and i + 1 < len(args) and args[i + 1] == pane
+               for i, a in enumerate(args)):
+            try:
+                pids.append(int(parts[0]))
+            except ValueError:
+                pass
+    return pids
+
+
+@contextlib.contextmanager
+def _pane_lock():
+    """Serialises stop-then-start for this pane across processes.
+
+    A SessionStart hook and a CwdChanged hook (both async) can launch for the same pane at the
+    same moment. Without this, each stop()s what the pid file names, then each starts its own
+    overlay -- and only the second is recorded, so the first is orphaned on screen.
+    """
+    try:
+        import fcntl
+    except ImportError:  # Windows: no flock; launches there are rare enough to go unguarded
+        yield
+        return
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CACHE_DIR / f"hud-{_pane_key()}.lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def launch(
@@ -416,8 +473,6 @@ def launch(
     # nothing that belongs to anybody else is touched either. See _active_tmux_pane().
     if not _active_tmux_pane() and _daemon_hosted():
         return False
-
-    stop()
 
     if sys.platform.startswith("win"):
         args = [_windows_interpreter() or sys.executable, str(binary)]
@@ -460,15 +515,18 @@ def launch(
     else:
         detach = {"start_new_session": True}
 
-    try:
-        with open(os.devnull, "wb") as devnull:
-            process = subprocess.Popen(args, stdout=devnull, stderr=devnull, **detach)
-    except OSError:
-        return False
+    # Stop, start and record under one lock, so two launches for this pane can't both survive.
+    with _pane_lock():
+        stop()
+        try:
+            with open(os.devnull, "wb") as devnull:
+                process = subprocess.Popen(args, stdout=devnull, stderr=devnull, **detach)
+        except OSError:
+            return False
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        _pid_file().write_text(str(process.pid), encoding="utf-8")
-    except OSError:
-        pass
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            _pid_file().write_text(str(process.pid), encoding="utf-8")
+        except OSError:
+            pass
     return True
