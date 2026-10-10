@@ -86,7 +86,9 @@ def _resolve_image_path(image: object, root: Path) -> Path | None:
     return path if path.is_absolute() else root / path
 
 
-def _display_one(fields: dict, root: Path, args: argparse.Namespace, mode: str) -> dict:
+def _display_one(
+    fields: dict, root: Path, args: argparse.Namespace, mode: str, member: str | None = None
+) -> dict:
     display = fields.get("display") if isinstance(fields.get("display"), dict) else {}
     show_image = args.show_image if args.show_image is not None else display.get("image", True)
     show_name = args.show_name if args.show_name is not None else display.get("name", True)
@@ -116,6 +118,7 @@ def _display_one(fields: dict, root: Path, args: argparse.Namespace, mode: str) 
             avatar_min=args.avatar_min,
             position=args.position,
             margin=args.margin,
+            member=member,
         )
         return result
 
@@ -207,6 +210,11 @@ def main() -> None:
         help="show this picture variant for this invocation only, ignoring the persona's stored "
         "display.variant (see toggle_display.py --variant to change what's stored)",
     )
+    parser.add_argument(
+        "--member",
+        help="draw (or, with --clear, remove) agent-team member NAME's badge beside this session's "
+        "own, found by name (see discovery.discover_for_session); hud mode only",
+    )
     parser.add_argument("--show-image", dest="show_image", action="store_true", default=None)
     parser.add_argument("--no-image", dest="show_image", action="store_false")
     parser.add_argument("--show-name", dest="show_name", action="store_true", default=None)
@@ -214,6 +222,12 @@ def main() -> None:
     args = parser.parse_args()
 
     machine_readable = not sys.stdout.isatty()
+
+    if args.clear and args.member:
+        report = {"member": args.member, "stopped_hud": hud.stop(args.member)}
+        if machine_readable:
+            _print_reports([report])
+        return
 
     if args.clear:
         report = _clear(args)
@@ -237,7 +251,14 @@ def main() -> None:
         display = fields.get("display") if isinstance(fields.get("display"), dict) else {}
         return bool(display.get("autostart", True))
 
-    if args.profile:
+    if args.member:
+        # A member's badge is an extra overlay beside this session's own. The other modes draw into
+        # this session's own terminal text or settings, which a member's face has no business in.
+        if mode == "hud":
+            for persona in discovery.discover_for_session(root, agent_name=args.member):
+                if _autostart_allows(persona.fields):
+                    reports.append(_display_one(persona.fields, persona.root, args, mode, args.member))
+    elif args.profile:
         fields = _load_markdown_fields(Path(args.profile))
         if fields and _autostart_allows(fields):
             reports.append(_display_one(fields, root, args, mode))

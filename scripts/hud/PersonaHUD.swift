@@ -46,6 +46,9 @@ struct Options {
     // started it, which also means nothing else would ever clean it up -- watching this pid is
     // what makes it disappear when the session exits, with no hook to configure.
     var watchPid: pid_t = 0
+    // 0 is the session's own badge; an agent-team member's badge sits in slot 1, 2, ... -- stacked
+    // away from the edge the badges hug, so a team sharing one terminal shows every member at once.
+    var slot = 0
 }
 
 func parseArgs() -> Options {
@@ -67,6 +70,9 @@ func parseArgs() -> Options {
         case "--tmux-bin": o.tmuxBin = value()
         case "--tty": o.tty = value()
         case "--watch-pid": o.watchPid = pid_t(Int32(value()) ?? 0)
+        case "--slot": o.slot = max(0, Int(value()) ?? 0)
+        // Identifies this overlay to hud.py's stop(), which finds it by command line; unused here.
+        case "--hud-id": _ = value()
         default: break
         }
     }
@@ -592,11 +598,14 @@ final class Controller: NSObject {
         case "r": x = target.maxX - s.width - m
         default: x = target.midX - s.width / 2
         }
+        // Slots stack away from the edge: down from a top edge (and from the middle), up from a
+        // bottom one. Cocoa's y axis runs upward.
+        let step = CGFloat(opts.slot) * (s.height + max(4, m / 4))
         let y: CGFloat
         switch opts.position.count > 1 ? opts.position.first : nil {
-        case "t": y = target.maxY - s.height - m
-        case "b": y = target.minY + m
-        default: y = target.midY - s.height / 2
+        case "t": y = target.maxY - s.height - m - step
+        case "b": y = target.minY + m + step
+        default: y = target.midY - s.height / 2 - step
         }
         panel.setFrameOrigin(NSPoint(x: x, y: y))
         if !panel.isVisible { panel.orderFrontRegardless() }

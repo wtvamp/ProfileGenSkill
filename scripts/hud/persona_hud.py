@@ -105,6 +105,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tmux-pane", default="")
     parser.add_argument("--tmux-bin", default="")
     parser.add_argument("--watch-pid", type=int, default=0)
+    # 0 is the session's own badge; a team member's sits in slot 1, 2, ... (see PersonaHUD.swift).
+    parser.add_argument("--slot", type=int, default=0)
+    # Identifies this overlay to hud.py's stop(), which finds it by command line; unused here.
+    parser.add_argument("--hud-id", default="")
     return parser.parse_args()
 
 
@@ -446,12 +450,15 @@ class HUD:
             x = right - w - m
         else:
             x = (left + right - w) / 2
+        # Slots stack away from the edge: down from a top edge (and from the middle), up from a
+        # bottom one. Screen y runs downward here.
+        step = max(0, self.args.slot) * (h + max(4, m / 4))
         if len(position) > 1 and position.startswith("t"):
-            y = top + m
+            y = top + m + step
         elif len(position) > 1 and position.startswith("b"):
-            y = bottom - h - m
+            y = bottom - h - m - step
         else:
-            y = (top + bottom - h) / 2
+            y = (top + bottom - h) / 2 + step
         self.root.geometry(f"+{int(x)}+{int(y)}")
         self.root.deiconify()
         self.root.attributes("-topmost", True)

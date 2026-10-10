@@ -35,7 +35,10 @@ def _isolated_cache(tmp_path, monkeypatch):
     # stop() also sweeps real running overlays pinned to the pane by their --tmux-pane argument --
     # left live, a test setting $TMUX_PANE would SIGTERM a real overlay on that pane. The sweep
     # has its own tests below, against _real_pane_overlays with a fake `ps`.
-    monkeypatch.setattr(hud, "_pane_overlays", lambda pane: [])
+    monkeypatch.setattr(hud, "_pane_overlays", lambda hud_id, legacy_pane=None: [])
+    # Outside tmux a badge's area is keyed by the session's tty, found from the real process tree.
+    # None keeps every test's area "default" unless it sets $TMUX_PANE or stubs this itself.
+    monkeypatch.setattr(hud, "_session_tty", lambda: None)
 
 
 def test_is_supported_on_macos_requires_swiftc(monkeypatch):
@@ -742,36 +745,44 @@ def test_card_radius_is_concentric_with_the_tile():
 
 
 _PS = (
-    "  101 /Users/u/.cache/profile-gen/persona-hud --avatar 48 --name Ada --tmux-pane %29 --tmux-bin /usr/bin/tmux\n"
+    "  101 /Users/u/.cache/profile-gen/persona-hud --name Ada --tmux-pane %29 --hud-id 29/main\n"
     "  102 /Users/u/.cache/profile-gen/persona-hud --name Ada --tmux-pane %29 --tty /dev/ttys001\n"
-    "  103 /Users/u/.cache/profile-gen/persona-hud --name Bo --tmux-pane %2 --tmux-bin /usr/bin/tmux\n"
-    "  104 /usr/bin/vim notes-about --tmux-pane %29\n"
-    "  105 /Users/u/.cache/profile-gen/persona-hud --name Cy --tmux-pane %290\n"
+    "  103 /Users/u/.cache/profile-gen/persona-hud --name Bo --tmux-pane %29 --hud-id 29/bo --slot 1\n"
+    "  104 /usr/bin/vim notes --hud-id 29/main\n"
+    "  105 /Users/u/.cache/profile-gen/persona-hud --name Cy --hud-id 290/main\n"
+    "  106 /Users/u/.cache/profile-gen/persona-hud --name Di --hud-id ttys004/main --tty /dev/ttys004\n"
 )
 
 
-def test_pane_overlays_finds_every_overlay_on_the_pane_and_nothing_else(monkeypatch):
-    # Regression, 10 Oct 2026: two launches racing left four copies of one persona on one pane,
-    # of which the pid file knew only the last. Other panes (%2, %290) and other programs are
-    # never matched.
+def _fake_ps(monkeypatch):
     monkeypatch.setattr(
         hud.subprocess, "run", lambda args, **kw: types.SimpleNamespace(stdout=_PS)
     )
-    assert _real_pane_overlays("%29") == [101, 102]
-    assert _real_pane_overlays("%2") == [103]
 
 
-def test_pane_overlays_needs_a_pane(monkeypatch):
-    monkeypatch.setattr(
-        hud.subprocess, "run", lambda args, **kw: pytest.fail("ps must not run without a pane")
-    )
-    assert _real_pane_overlays(None) == []
+def test_pane_overlays_matches_the_exact_badge_id_and_nothing_else(monkeypatch):
+    # Regression, 10 Oct 2026: two launches racing left four copies of one persona on one pane,
+    # of which the pid file knew only the last. Other areas (290), this area's other badges (bo)
+    # and other programs are never matched.
+    _fake_ps(monkeypatch)
+    assert _real_pane_overlays("29/bo") == [103]
+    assert _real_pane_overlays("ttys004/main") == [106]
+
+
+def test_pane_overlays_treats_a_pre_hud_id_overlay_as_the_sessions_own_badge(monkeypatch):
+    _fake_ps(monkeypatch)
+    assert _real_pane_overlays("29/main", "%29") == [101, 102]
+    # ...but never as a team member's
+    assert _real_pane_overlays("29/bo", None) == [103]
 
 
 def test_stop_kills_the_pid_file_overlay_and_any_orphans(monkeypatch, tmp_path):
     monkeypatch.setenv("TMUX_PANE", "%29")
     (tmp_path / "hud-29.pid").write_text("103")
-    monkeypatch.setattr(hud, "_pane_overlays", lambda pane: [101, 102] if pane == "%29" else [])
+    monkeypatch.setattr(
+        hud, "_pane_overlays",
+        lambda hud_id, legacy_pane=None: [101, 102] if hud_id == "29/main" else [],
+    )
     killed = []
     monkeypatch.setattr(hud.os, "kill", lambda pid, sig: killed.append(pid))
 
@@ -780,12 +791,41 @@ def test_stop_kills_the_pid_file_overlay_and_any_orphans(monkeypatch, tmp_path):
     assert not (tmp_path / "hud-29.pid").exists()
 
 
-def test_launch_stops_and_starts_inside_the_pane_lock(monkeypatch, tmp_path):
+def test_stopping_a_member_leaves_the_sessions_own_badge_alone(monkeypatch, tmp_path):
+    monkeypatch.setenv("TMUX_PANE", "%29")
+    (tmp_path / "hud-29.pid").write_text("100")
+    (tmp_path / "hud-29--bo.pid").write_text("103 1")
+    killed = []
+    monkeypatch.setattr(hud.os, "kill", lambda pid, sig: killed.append(pid))
+
+    assert hud.stop("bo") is True
+    assert killed == [103]
+    assert (tmp_path / "hud-29.pid").exists() and not (tmp_path / "hud-29--bo.pid").exists()
+
+
+def _capture_launch(monkeypatch, tmp_path):
     binary = tmp_path / "persona-hud"
     binary.touch()
     monkeypatch.setattr(hud, "ensure_built", lambda: binary)
     monkeypatch.setattr(hud, "_controlling_tty", lambda pane: None)
     monkeypatch.setattr(hud, "owner_pid", lambda: None)
+    launched = []
+    pids = iter(range(500, 600))
+
+    def fake_popen(args, **kw):
+        launched.append(args)
+        return types.SimpleNamespace(pid=next(pids))
+
+    monkeypatch.setattr(hud.subprocess, "Popen", fake_popen)
+    return launched
+
+
+def _flag(args, name):
+    return args[args.index(name) + 1]
+
+
+def test_launch_stops_and_starts_inside_the_pane_lock(monkeypatch, tmp_path):
+    _capture_launch(monkeypatch, tmp_path)
     events = []
 
     class Lock:
@@ -796,7 +836,7 @@ def test_launch_stops_and_starts_inside_the_pane_lock(monkeypatch, tmp_path):
             events.append("unlock")
 
     monkeypatch.setattr(hud, "_pane_lock", Lock)
-    monkeypatch.setattr(hud, "stop", lambda: events.append("stop"))
+    monkeypatch.setattr(hud, "stop", lambda member=None: events.append("stop"))
     monkeypatch.setattr(
         hud.subprocess, "Popen",
         lambda args, **kw: events.append("start") or types.SimpleNamespace(pid=7),
@@ -805,6 +845,56 @@ def test_launch_stops_and_starts_inside_the_pane_lock(monkeypatch, tmp_path):
     assert hud.launch("/tmp/p.png", "Ada") is True
     assert events == ["lock", "stop", "start", "unlock"]
     assert (tmp_path / "hud-default.pid").read_text() == "7"
+
+
+def test_team_members_stack_in_slots_after_the_sessions_own_badge(monkeypatch, tmp_path):
+    # An in-process team shares the lead's terminal, so its members' badges sit beside the lead's
+    # -- with or without tmux.
+    launched = _capture_launch(monkeypatch, tmp_path)
+    monkeypatch.setattr(hud.os, "kill", lambda pid, sig: None)  # every overlay counts as alive
+
+    assert hud.launch("/tmp/lead.png", "Lyra") is True
+    assert hud.launch("/tmp/nora.png", "Nora Vale", member="nora") is True
+    assert hud.launch("/tmp/sol.png", "Sol Brandt", member="sol") is True
+
+    assert [_flag(a, "--slot") for a in launched] == ["0", "1", "2"]
+    assert [_flag(a, "--hud-id") for a in launched] == ["default/main", "default/nora", "default/sol"]
+    assert (tmp_path / "hud-default--nora.pid").read_text() == "501 1"
+
+
+def test_a_freed_member_slot_is_reused(monkeypatch, tmp_path):
+    launched = _capture_launch(monkeypatch, tmp_path)
+    alive = set()
+
+    def kill(pid, sig):
+        if sig == 0 and pid not in alive:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(hud.os, "kill", kill)
+    (tmp_path / "hud-default--nora.pid").write_text("401 1")  # exited
+    alive.add(402)
+    (tmp_path / "hud-default--sol.pid").write_text("402 2")
+
+    assert hud.launch("/tmp/zed.png", "Zed", member="zed") is True
+    assert _flag(launched[-1], "--slot") == "1"
+
+
+def test_outside_tmux_the_area_is_the_sessions_own_tty(monkeypatch, tmp_path):
+    # Without tmux, two sessions in two terminal windows used to share hud-default.pid and kill
+    # each other's badges.
+    monkeypatch.setattr(hud, "_session_tty", lambda: "/dev/ttys004")
+    launched = _capture_launch(monkeypatch, tmp_path)
+
+    assert hud.launch("/tmp/p.png", "Ada") is True
+    assert _flag(launched[-1], "--hud-id") == "ttys004/main"
+    assert (tmp_path / "hud-ttys004.pid").exists()
+
+
+def test_both_overlays_accept_slot_and_hud_id():
+    swift = _swift_source()
+    assert 'case "--slot"' in swift and 'case "--hud-id"' in swift
+    windows = _windows_source()
+    assert '"--slot"' in windows and '"--hud-id"' in windows
 
 
 def test_pane_lock_serialises_two_holders(tmp_path):

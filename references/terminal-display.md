@@ -140,9 +140,23 @@ It resolves the nearest persona for both directories and redraws only when they 
 
 ## Agent-team members: each one wears its own persona
 
-A Claude Code agent-team member that runs in its own tmux pane is a separate `claude` process started with `--agent-name <name>`, and its `SessionStart` hook draws a badge on *its* pane, independent of the lead's. Which persona it wears comes from that name, not from the folder it was started in — a lead working in one sub-project often spawns a member whose persona lives in another. `discovery.discover_for_session()` walks up from the member's directory and, at each level, takes the first of: `profiles/<name>/<name>.md`, `.profiles-assets/<name>/<name>.md`, or a `.claude/persona/*.md` — in that directory or one folder below it — whose `name` matches. A match is the persona's first name (`ada` for "Ada Sterling"), its full name as a slug (`ada-sterling`), or its `slug` field, case-insensitively; the nearest wins. A member whose name matches no persona gets **no** badge rather than the lead's, since a wrong face reads as a claim about who is talking. `PROFILEGEN_AGENT_NAME` overrides the name (empty means "not a team member").
+A Claude Code agent-team member has an id of the form `<name>@<team>`, and wears the persona with that name — not the lead's, and not whichever persona owns the folder it happens to be in. `discovery.discover_for_session()` finds it by walking up from the starting directory and, at each level, taking the first of `profiles/<name>/<name>.md`, `.profiles-assets/<name>/<name>.md`, or a `.claude/persona/*.md` whose `name` matches — in the starting directory or up to two folders below it, and in each ancestor or one folder below it. A match is the persona's first name (`ada` for "Ada Sterling"), its full name as a slug (`ada-sterling`), or its `slug` field, case-insensitively; the nearest wins. A name that matches no persona gets **no** badge rather than the lead's, since a wrong face reads as a claim about who is talking.
 
-Pair this with `display.follow_cwd: false` on the lead's persona when the lead itself moves through those sub-projects: the lead's badge then stays put while each member shows its own. In-process members share the lead's process and pane, so they have no pane of their own to badge.
+Where the badge goes depends on how the team is displayed, and nothing here needs tmux:
+
+- **In-process** (the default, and the only mode without tmux or iTerm2 split panes): members share the lead's process and terminal. `scripts/team_member.py`, a `SubagentStart`/`SubagentStop` hook, draws each member's badge *beside* the lead's in the same window or pane — stacked in slots below it (above it for a bottom position) — and removes it when the member stops. All of them also exit with the lead's session.
+- **Split panes** (tmux or iTerm2): each member is its own process with its own terminal, and its own `SessionStart` hook draws its badge there. `team_member.py` reads the team's config (`<config dir>/teams/<team>/config.json`) and leaves those members alone, so nothing is drawn twice.
+
+```json
+"SubagentStart": [{"hooks": [{"type": "command", "async": true, "timeout": 60,
+  "command": "python3 <SKILL_DIR>/scripts/team_member.py >/dev/null 2>&1 || true"}]}],
+"SubagentStop": [{"hooks": [{"type": "command", "async": true, "timeout": 60,
+  "command": "python3 <SKILL_DIR>/scripts/team_member.py >/dev/null 2>&1 || true"}]}]
+```
+
+Plain subagents (ids without an `@`) are not personas and get no badge. `show_profile.py --member <name>` draws one member's badge by hand, and `--clear --member <name>` removes just that one. Pair this with `display.follow_cwd: false` on the lead's persona when the lead itself moves through its members' folders, so its own badge stays put while each member shows theirs. `PROFILEGEN_AGENT_NAME` overrides a split-pane member's name (empty means "not a team member").
+
+Outside tmux, each session's badges are keyed by its own tty, so sessions in separate terminal windows never stop each other's.
 
 ## A spoken self-introduction via the same hook
 

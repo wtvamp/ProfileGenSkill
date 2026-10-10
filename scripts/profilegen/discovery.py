@@ -157,20 +157,32 @@ def _name_matches(fields: dict, agent_name: str) -> bool:
     return wanted in candidates
 
 
-def named_persona(root: Path, agent_name: str) -> DiscoveredPersona | None:
-    """A persona file at `root/.claude/persona/` or one folder down whose name is `agent_name`.
+def _subdirectories(root: Path, depth: int) -> list[Path]:
+    """`root` and its non-hidden subfolders down to `depth` levels, nearest level first."""
+    found, level = [root], [root]
+    for _ in range(depth):
+        nxt = []
+        for directory in level:
+            try:
+                nxt += sorted(c for c in directory.iterdir() if c.is_dir() and not c.name.startswith("."))
+            except OSError:
+                continue
+        found += nxt
+        level = nxt
+    return found
+
+
+def named_persona(root: Path, agent_name: str, depth: int = 1) -> DiscoveredPersona | None:
+    """A persona file at `root/.claude/persona/`, or up to `depth` folders down, named `agent_name`.
 
     Team members are often launched from a folder that isn't their own persona's: a lead working
-    in one sub-project spawns a member whose persona lives in a sibling sub-project. Looking one
-    level below each ancestor -- not the whole tree, which can be enormous -- finds those sibling
-    personas while staying a handful of directory listings per level. Nearest match wins: this
-    folder's own persona before its subfolders', and the caller tries nearer ancestors first.
+    in one sub-project spawns a member whose persona lives in a sibling sub-project, or a lead at a
+    project's top spawns members whose personas live in sub-projects below it. A shallow search --
+    not the whole tree, which can be enormous -- finds those while staying a handful of directory
+    listings. Nearest match wins: this folder's own persona before its subfolders', shallower
+    before deeper, and the caller tries nearer ancestors first.
     """
-    try:
-        children = sorted(c for c in root.iterdir() if c.is_dir() and not c.name.startswith("."))
-    except OSError:
-        children = []
-    for base in (root, *children):
+    for base in _subdirectories(root, depth):
         directory = base / ".claude" / "persona"
         try:
             files = sorted(f for f in directory.iterdir() if f.suffix.lower() == ".md")
@@ -212,8 +224,10 @@ def discover_for_session(root: Path, agent_name: str | None = None) -> list[Disc
     """
     name = agent_name if agent_name is not None else current_agent_name()
     if name:
-        for directory in _self_and_ancestors(root):
-            own = agent_persona(directory, name) or named_persona(directory, name)
+        # Two levels below where the session is (a project's sub-projects are often grouped one
+        # folder down), one level below each ancestor (siblings of where it is).
+        for i, directory in enumerate(_self_and_ancestors(root)):
+            own = agent_persona(directory, name) or named_persona(directory, name, 2 if i == 0 else 1)
             if own:
                 return [own]
         return []

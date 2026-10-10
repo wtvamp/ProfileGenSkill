@@ -304,20 +304,39 @@ def _controlling_tty(pane: str | None) -> str | None:
 
 
 def _pane_key() -> str:
-    """Identifies the tmux pane this persona belongs to.
+    """Identifies the screen area this session's badges belong to: its tmux pane, else its tty.
 
-    Several Claude sessions, each with its own persona, commonly run in different tmux windows of
-    the same terminal. Keying the pid file (and the kill) by pane is what keeps them independent:
-    otherwise they'd share one pid file and stopping or relaunching one persona's overlay would
-    kill the others'.
+    Several Claude sessions, each with its own persona, commonly run side by side -- in different
+    tmux windows or panes, or in different terminal windows with no tmux at all. Keying the pid
+    file (and the kill) by area is what keeps them independent: otherwise they'd share one pid file
+    and stopping or relaunching one persona's overlay would kill the others'. Outside tmux the
+    session's own controlling tty is that key -- each terminal window or split has its own.
     """
-    pane = _active_tmux_pane() or ""
-    safe = "".join(ch for ch in pane if ch.isalnum())
+    raw = _active_tmux_pane() or ""
+    if not raw and not sys.platform.startswith("win"):
+        raw = (_session_tty() or "").rsplit("/", 1)[-1]
+    safe = "".join(ch for ch in raw if ch.isalnum())
     return safe or "default"
 
 
-def _pid_file() -> Path:
-    return CACHE_DIR / f"hud-{_pane_key()}.pid"
+def _session_tty() -> str | None:
+    """This session's own controlling tty outside tmux (see _controlling_tty)."""
+    return _controlling_tty(None)
+
+
+def _pid_file(member: str | None = None) -> Path:
+    """The session's own badge is ``hud-<area>.pid``; a team member's is ``hud-<area>--<member>.pid``."""
+    suffix = f"--{_safe(member)}" if member else ""
+    return CACHE_DIR / f"hud-{_pane_key()}{suffix}.pid"
+
+
+def _safe(member: str) -> str:
+    return "".join(ch for ch in member.lower() if ch.isalnum() or ch in "-_") or "member"
+
+
+def _overlay_id(member: str | None = None) -> str:
+    """What --hud-id each overlay is started with: its area plus whose badge it is."""
+    return f"{_pane_key()}/{_safe(member) if member else 'main'}"
 
 
 def _windows_interpreter() -> str | None:
@@ -372,17 +391,17 @@ def ensure_built() -> Path | None:
     return BINARY if BINARY.is_file() else None
 
 
-def stop() -> bool:
-    """Stop this pane's overlay. True if one was actually stopped.
+def stop(member: str | None = None) -> bool:
+    """Stop this session's badge, or team member ``member``'s. True if one was actually stopped.
 
-    Deliberately scoped to this pane -- never a blanket `pkill` of every overlay, which would take
-    down the personas of other sessions running in other tmux windows.
+    Deliberately scoped to this area and this badge -- never a blanket `pkill` of every overlay,
+    which would take down the personas of other sessions, or this session's other badges.
     """
-    pid_file = _pid_file()
-    pids = set(_pane_overlays(_active_tmux_pane()))
+    pid_file = _pid_file(member)
+    pids = set(_pane_overlays(_overlay_id(member), None if member else _active_tmux_pane()))
     try:
-        pids.add(int(pid_file.read_text(encoding="utf-8").strip()))
-    except (OSError, ValueError):
+        pids.add(int(pid_file.read_text(encoding="utf-8").split()[0]))
+    except (OSError, ValueError, IndexError):
         pass
 
     stopped = False
@@ -396,16 +415,17 @@ def stop() -> bool:
     return stopped
 
 
-def _pane_overlays(pane: str | None) -> "list[int]":
-    """PIDs of every running overlay pinned to ``pane``, whether or not the pid file knows them.
+def _pane_overlays(hud_id: str, legacy_pane: str | None = None) -> "list[int]":
+    """PIDs of every running overlay started with ``--hud-id hud_id``, pid file or not.
 
-    The pid file only ever names the last overlay launched for a pane. One that lost track of an
+    The pid file only ever names the last overlay launched for a badge. One that lost track of an
     earlier one -- two launches racing, as before _pane_lock() existed, left four copies of one
     persona stacked on a single pane on 10 Oct 2026 -- would otherwise stay on screen until its
-    session exited. Matched on this pane's own --tmux-pane argument, so other panes' overlays are
-    never touched. POSIX only; without a pane there is nothing to match on.
+    session exited. Matched on the exact id, so other areas' overlays, and this area's other
+    badges, are never touched. An overlay from before --hud-id existed is matched as the session's
+    own badge by its --tmux-pane being ``legacy_pane``. POSIX only.
     """
-    if not pane or sys.platform.startswith("win"):
+    if sys.platform.startswith("win"):
         return []
     try:
         out = subprocess.run(
@@ -419,8 +439,10 @@ def _pane_overlays(pane: str | None) -> "list[int]":
         if len(parts) < 3 or Path(parts[1]).name != BINARY.name:
             continue
         args = parts[2:]
-        if any(a == "--tmux-pane" and i + 1 < len(args) and args[i + 1] == pane
-               for i, a in enumerate(args)):
+        flags = {a: args[i + 1] for i, a in enumerate(args[:-1]) if a.startswith("--")}
+        if flags.get("--hud-id") == hud_id or (
+            legacy_pane and "--hud-id" not in flags and flags.get("--tmux-pane") == legacy_pane
+        ):
             try:
                 pids.append(int(parts[0]))
             except ValueError:
@@ -450,6 +472,29 @@ def _pane_lock():
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def _free_slot() -> int:
+    """The lowest slot from 1 up that no live team-member badge in this area is using.
+
+    Slot 0 is the session's own badge; members stack after it. Read from the members' pid files,
+    which hold ``<pid> <slot>``; a file whose overlay has exited frees its slot.
+    """
+    used = set()
+    for path in CACHE_DIR.glob(f"hud-{_pane_key()}--*.pid"):
+        try:
+            pid, slot = (int(v) for v in path.read_text(encoding="utf-8").split()[:2])
+            os.kill(pid, 0)
+        except PermissionError:
+            used.add(slot)
+        except (OSError, ValueError):
+            continue
+        else:
+            used.add(slot)
+    slot = 1
+    while slot in used:
+        slot += 1
+    return slot
+
+
 def launch(
     image_path: str | None,
     name: str | None,
@@ -457,10 +502,15 @@ def launch(
     position: str = DEFAULT_POSITION,
     margin: int = DEFAULT_MARGIN,
     avatar_min: int = DEFAULT_AVATAR_MIN,
+    member: str | None = None,
 ) -> bool:
     """Replace any running overlay with one showing ``image_path``/``name``. False if the overlay
     isn't available (non-macOS, no swiftc, or the build failed) -- callers fall back to another
-    mode rather than treating that as an error."""
+    mode rather than treating that as an error.
+
+    ``member`` draws an agent-team member's badge instead of this session's own: alongside it, in
+    the next free slot, so an in-process team (which shares this session's terminal) shows every
+    member at once. Stopped by ``stop(member)``, or on its own when this session exits."""
     if not image_path and not name:
         return False
     binary = ensure_built()
@@ -517,7 +567,9 @@ def launch(
 
     # Stop, start and record under one lock, so two launches for this pane can't both survive.
     with _pane_lock():
-        stop()
+        stop(member)
+        slot = _free_slot() if member else 0
+        args += ["--slot", str(slot), "--hud-id", _overlay_id(member)]
         try:
             with open(os.devnull, "wb") as devnull:
                 process = subprocess.Popen(args, stdout=devnull, stderr=devnull, **detach)
@@ -526,7 +578,8 @@ def launch(
 
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            _pid_file().write_text(str(process.pid), encoding="utf-8")
+            record = f"{process.pid} {slot}" if member else str(process.pid)
+            _pid_file(member).write_text(record, encoding="utf-8")
         except OSError:
             pass
     return True
