@@ -84,3 +84,49 @@ def test_team_member_persona_is_found_from_a_subdirectory(tmp_path):
 
     assert [p.fields["name"] for p in personas] == ["Nadia Okafor"]
     assert personas[0].root == evidence.resolve()
+
+
+def _cases_tree(tmp_path: Path) -> Path:
+    # A lead project whose sub-projects each carry their own persona, as a team works across.
+    office = tmp_path / "Office"
+    _project(office, "Lead Lyra", "lead")
+    _project(office / "matters" / "North", "Nora Vale", "persona")
+    _project(office / "matters" / "South", "Sol Brandt", "persona")
+    (office / "matters" / "North" / "notes" / "deep").mkdir(parents=True)
+    return office
+
+
+def test_team_member_finds_its_persona_in_a_sibling_project(tmp_path):
+    # Spawned from inside North's tree, but named for South's persona.
+    office = _cases_tree(tmp_path)
+    start = office / "matters" / "North" / "notes" / "deep"
+
+    found = discovery.discover_for_session(start, agent_name="sol")
+    assert [p.fields["name"] for p in found] == ["Sol Brandt"]
+    assert found[0].root == office / "matters" / "South"
+
+
+def test_team_member_name_matches_first_name_full_slug_or_slug_field(tmp_path):
+    office = _cases_tree(tmp_path)
+    start = office / "matters" / "North"
+
+    for name in ("nora", "Nora", "nora-vale"):
+        assert _names_for(start, name) == ["Nora Vale"]
+    assert _names_for(start, "lead") == ["Lead Lyra"]
+
+
+def test_nearest_match_wins(tmp_path):
+    office = _cases_tree(tmp_path)
+    _project(office / "matters" / "North" / "notes", "Nora Quill", "persona")
+
+    assert _names_for(office / "matters" / "North" / "notes" / "deep", "nora") == ["Nora Quill"]
+
+
+def test_team_member_with_no_matching_persona_still_gets_none(tmp_path):
+    office = _cases_tree(tmp_path)
+
+    assert _names_for(office / "matters" / "North", "zed") == []
+
+
+def _names_for(start: Path, agent_name: str) -> list[str]:
+    return [p.fields["name"] for p in discovery.discover_for_session(start, agent_name=agent_name)]

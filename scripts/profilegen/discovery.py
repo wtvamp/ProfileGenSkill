@@ -140,6 +140,51 @@ def agent_persona(root: Path, name: str) -> DiscoveredPersona | None:
     return None
 
 
+def _name_matches(fields: dict, agent_name: str) -> bool:
+    """Whether a persona's own fields identify it as the agent-team member called `agent_name`.
+
+    A lead names its team members as it likes -- usually the persona's first name (`ada` for
+    "Ada Sterling"), sometimes its slug (`ada-sterling`). Either matches, case-insensitively; so
+    does the persona's `slug` field. Nothing about any particular persona is assumed beyond that.
+    """
+    wanted = agent_name.strip().lower()
+    name = str(fields.get("name") or "").strip()
+    candidates = {str(fields.get("slug") or "").lower()}
+    if name:
+        candidates.add(re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-"))
+        candidates.add(name.split()[0].lower())
+    candidates.discard("")
+    return wanted in candidates
+
+
+def named_persona(root: Path, agent_name: str) -> DiscoveredPersona | None:
+    """A persona file at `root/.claude/persona/` or one folder down whose name is `agent_name`.
+
+    Team members are often launched from a folder that isn't their own persona's: a lead working
+    in one sub-project spawns a member whose persona lives in a sibling sub-project. Looking one
+    level below each ancestor -- not the whole tree, which can be enormous -- finds those sibling
+    personas while staying a handful of directory listings per level. Nearest match wins: this
+    folder's own persona before its subfolders', and the caller tries nearer ancestors first.
+    """
+    try:
+        children = sorted(c for c in root.iterdir() if c.is_dir() and not c.name.startswith("."))
+    except OSError:
+        children = []
+    for base in (root, *children):
+        directory = base / ".claude" / "persona"
+        try:
+            files = sorted(f for f in directory.iterdir() if f.suffix.lower() == ".md")
+        except OSError:
+            continue
+        for path in files:
+            fields = _load_markdown_fields(path)
+            if fields and _name_matches(fields, agent_name):
+                return DiscoveredPersona(
+                    fields.get("slug") or agent_name, fields, path, embedded=False, root=base
+                )
+    return None
+
+
 def _self_and_ancestors(start: Path) -> list[Path]:
     start = start.resolve()
     return [start, *start.parents]
@@ -159,6 +204,8 @@ def discover_for_session(root: Path, agent_name: str | None = None) -> list[Disc
 
     Both searches start at `root` and walk up, so a session opened in a subdirectory of a project
     finds that project's persona. A team member with its own persona file gets that one. A team
+    member's own file is `profiles/<name>/<name>.md`, or any `.claude/persona/*.md` whose name is
+    theirs (see named_persona()) -- at or above `root`, or one folder below any of those. A team
     member without one gets
     nothing at all -- no badge beats the lead's badge, because a wrong face is read as a fact about
     who is talking while a missing one is only a gap. Everything else gets the project personas.
@@ -166,7 +213,7 @@ def discover_for_session(root: Path, agent_name: str | None = None) -> list[Disc
     name = agent_name if agent_name is not None else current_agent_name()
     if name:
         for directory in _self_and_ancestors(root):
-            own = agent_persona(directory, name)
+            own = agent_persona(directory, name) or named_persona(directory, name)
             if own:
                 return [own]
         return []
