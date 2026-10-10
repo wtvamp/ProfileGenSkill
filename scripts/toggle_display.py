@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI: flip a persona's stored display preferences (image/name/autostart/variant) in place.
+"""CLI: flip a persona's stored display preferences (image/name/autostart/follow_cwd/variant) in place.
 
 Discovers personas the same way show_profile.py does (via the profile-gen marker blocks of the
 nearest CLAUDE.md at or above <root> that has any) and edits whichever markdown file that persona's content actually lives in --
@@ -89,15 +89,20 @@ def main() -> None:
         help="whether a SessionStart hook shows this persona automatically",
     )
     parser.add_argument(
+        "--follow-cwd",
+        choices=["on", "off"],
+        help="whether the badge switches to another persona when the session cd's into its folder",
+    )
+    parser.add_argument(
         "--variant",
         choices=["sfw", "nsfw", "toggle"],
         help="which picture to show: the SFW one, the NSFW one, or flip to the other",
     )
     args = parser.parse_args()
 
-    if args.image is None and args.name is None and args.autostart is None and args.variant is None:
+    if all(v is None for v in (args.image, args.name, args.autostart, args.follow_cwd, args.variant)):
         _fail(
-            "nothing to do: pass --image, --name and/or --autostart as on|off, "
+            "nothing to do: pass --image, --name, --autostart and/or --follow-cwd as on|off, "
             "and/or --variant as sfw|nsfw|toggle"
         )
         return
@@ -116,6 +121,7 @@ def main() -> None:
     image = (args.image == "on") if args.image else None
     name = (args.name == "on") if args.name else None
     autostart = (args.autostart == "on") if args.autostart else None
+    follow_cwd = (args.follow_cwd == "on") if args.follow_cwd else None
 
     results = []
     for persona in personas:
@@ -147,6 +153,7 @@ def main() -> None:
                 name=name,
                 autostart=autostart,
                 variant=variant,
+                follow_cwd=follow_cwd,
                 region=region,
             )
             if variant is not None:

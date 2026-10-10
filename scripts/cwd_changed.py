@@ -13,6 +13,10 @@ replaced:
   name are both off, leaves no badge rather than the previous persona's face;
 - a directory with no persona anywhere above it changes nothing, since the session still has the
   CLAUDE.md it started with loaded;
+- a session whose own persona (the project's) sets `display.follow_cwd: false` never swaps at
+  all: its badge stays put wherever it `cd`s. For a project whose subfolders carry their own
+  personas but whose agent only visits them -- reading a file, running a grep -- and isn't
+  *becoming* those personas;
 - a directory outside the session's project (`$CLAUDE_PROJECT_DIR`) counts as the project itself.
   Claude Code snaps the shell back to the project after any command that `cd`s out of it, and that
   reset fires no CwdChanged -- so taking `cd ~`'s persona (`~/CLAUDE.md`'s, usually) would leave it
@@ -61,9 +65,20 @@ def _within_project(cwd: str, project_dir: str | None) -> str:
     return cwd if here == project or project in here.parents else str(project)
 
 
+def _follows_cwd(project_dir: str) -> bool:
+    """False when the session's own persona has opted out with `display.follow_cwd: false`."""
+    for persona in discovery.discover_for_session(Path(project_dir)):
+        display = persona.fields.get("display")
+        if isinstance(display, dict) and display.get("follow_cwd") is False:
+            return False
+    return True
+
+
 def plan(old_cwd: str | None, new_cwd: str | None, project_dir: str | None = None) -> list[list[str]]:
     """The show_profile.py argument lists to run for this move, in order -- empty for no change."""
     if not new_cwd:
+        return []
+    if project_dir and not _follows_cwd(project_dir):
         return []
     new_cwd = _within_project(new_cwd, project_dir)
     new = discovery.discover_for_session(Path(new_cwd))

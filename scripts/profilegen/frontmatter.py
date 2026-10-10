@@ -137,9 +137,10 @@ def set_display_flags(
     name: bool | None = None,
     autostart: bool | None = None,
     variant: str | None = None,
+    follow_cwd: bool | None = None,
     region: tuple[int, int] | None = None,
 ) -> str:
-    """Set ``display.image``/``display.name``/``display.autostart`` booleans, and/or the
+    """Set ``display.image``/``display.name``/``display.autostart``/``display.follow_cwd`` booleans, and/or the
     ``display.variant`` string (``sfw``/``nsfw``), in place. Only the keys actually passed (not
     ``None``) are changed; passing none is a no-op.
 
@@ -162,6 +163,7 @@ def set_display_flags(
             ("name", name),
             ("autostart", autostart),
             ("variant", variant),
+            ("follow_cwd", follow_cwd),
         )
         if value is not None
     }

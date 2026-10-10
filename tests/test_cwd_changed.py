@@ -91,3 +91,32 @@ def test_moves_inside_the_project_still_swap(tmp_path):
     assert cwd_changed.plan(str(beacon), str(tmp_path / "elsewhere"), project_dir=str(evidence))[-1] == [
         "--root", str(evidence.resolve()), "--autostart-only",
     ]
+
+
+def _stop_following(project: Path) -> None:
+    persona = project / ".claude" / "persona" / "persona.md"
+    text = persona.read_text(encoding="utf-8")
+    persona.write_text(
+        text.replace("---\n\n#", "display:\n  follow_cwd: false\n---\n\n#", 1), encoding="utf-8"
+    )
+
+
+def test_a_project_persona_with_follow_cwd_false_never_swaps(tmp_path):
+    # A session that only visits a sub-persona's folder (to read or grep it) keeps its own badge.
+    evidence = _work_tree(tmp_path)
+    _stop_following(evidence)
+    beacon = evidence / "clients" / "Beacon"
+
+    assert cwd_changed.plan(str(evidence), str(beacon), str(evidence)) == []
+    assert cwd_changed.plan(str(beacon), str(evidence), str(evidence)) == []
+
+
+def test_follow_cwd_false_on_a_visited_persona_does_not_stop_the_session_swapping(tmp_path):
+    # Only the session's own (project) persona decides; the folder being entered has no say.
+    evidence = _work_tree(tmp_path)
+    beacon = evidence / "clients" / "Beacon"
+    _stop_following(beacon)
+
+    assert cwd_changed.plan(str(evidence), str(beacon), str(evidence))[-1] == [
+        "--root", str(beacon), "--autostart-only",
+    ]

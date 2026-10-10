@@ -413,3 +413,16 @@ def test_a_persona_md_with_a_different_name_is_left_alone(tmp_path):
 
     _run(["scripts/toggle_display.py", "--root", str(tmp_path), "--variant", "nsfw"], cwd=REPO_ROOT)
     assert other.read_text(encoding="utf-8") == body
+
+
+def test_follow_cwd_off_is_written_and_nothing_else_changes(tmp_path):
+    write_result = _write_profile(tmp_path, "Vera Lux", "vera-lux", "claude-md-ref", "tracked")
+    markdown_path = Path(write_result["markdown_path"])
+    before = frontmatter.extract_frontmatter(markdown_path.read_text(encoding="utf-8"))
+
+    result = _run(
+        ["scripts/toggle_display.py", "--root", str(tmp_path), "--follow-cwd", "off"], cwd=REPO_ROOT
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    after = frontmatter.extract_frontmatter(markdown_path.read_text(encoding="utf-8"))
+    assert after["display"] == {**before["display"], "follow_cwd": False}

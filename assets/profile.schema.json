@@ -20,6 +20,7 @@
         "image": { "type": "boolean" },
         "name": { "type": "boolean" },
         "autostart": { "type": "boolean" },
+        "follow_cwd": { "type": "boolean" },
         "variant": { "type": "string", "enum": ["sfw", "nsfw"] }
       },
       "additionalProperties": false
