@@ -583,3 +583,142 @@ def launch(
         except OSError:
             pass
     return True
+
+
+def where() -> dict:
+    """What launch() can draw on for this session, for the report: the pane it pins to (None outside
+    tmux or with no pane of its own) and whether the session is served by the background-agent
+    daemon. A daemon-hosted session is usually watched from `claude agents` viewers too, which its
+    own pane says nothing about -- see viewer_panes()."""
+    return {"pane": _active_tmux_pane(), "daemon_hosted": _daemon_hosted()}
+
+
+def viewer_panes() -> "list[tuple[str, str, int]]":
+    """Every tmux pane running a `claude agents` viewer, as (pane id, tty, viewer pid).
+
+    A daemon-hosted session can be on screen in any of these, but none of them says which job it is
+    showing: a viewer's connection to the daemon is an anonymous socket, so there is no way to tell
+    "this viewer is showing this session" from outside Claude Code. That is why overlays are pinned
+    to them only on request (launch_viewers), never by default. POSIX + tmux only.
+    """
+    if sys.platform.startswith("win"):
+        return []
+    tmux_bin = shutil.which("tmux")
+    if not tmux_bin:
+        return []
+    try:
+        panes = subprocess.run(
+            [tmux_bin, "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        procs = subprocess.run(
+            ["ps", "-axww", "-o", "pid=,tty=,command="], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    viewers = {}
+    for line in procs.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[2].split()[-1:] == ["agents"] and "claude" in parts[2].split()[0]:
+            viewers.setdefault(f"/dev/{parts[1]}", int(parts[0]))
+    found = []
+    for line in panes.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] in viewers:
+            found.append((parts[0], parts[1], viewers[parts[1]]))
+    return found
+
+
+def _viewer_id(pane: str, name: str | None) -> str:
+    return f"{''.join(ch for ch in pane if ch.isalnum())}/viewer-{_safe(name or 'persona')}"
+
+
+def _overlays_where(match) -> "list[int]":
+    """PIDs of running overlays whose --hud-id satisfies ``match``. POSIX only."""
+    if sys.platform.startswith("win"):
+        return []
+    try:
+        out = subprocess.run(
+            ["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or Path(parts[1]).name != BINARY.name:
+            continue
+        args = parts[2:]
+        flags = {a: args[i + 1] for i, a in enumerate(args[:-1]) if a.startswith("--")}
+        if match(flags.get("--hud-id", "")):
+            try:
+                pids.append(int(parts[0]))
+            except ValueError:
+                pass
+    return pids
+
+
+def launch_viewers(
+    image_path: str | None,
+    name: str | None,
+    avatar: int = DEFAULT_AVATAR,
+    position: str = DEFAULT_POSITION,
+    margin: int = DEFAULT_MARGIN,
+    avatar_min: int = DEFAULT_AVATAR_MIN,
+    exclude: "tuple[str, ...]" = (),
+) -> "list[str]":
+    """Opt-in for a daemon-hosted session: pin a copy of its overlay to every `claude agents` viewer
+    pane (except ``exclude``, normally the session's own pane, which launch() already covers).
+    Returns the panes it pinned to.
+
+    The cost of the guess viewer_panes() can't avoid: the overlay stays on a viewer pane while that
+    viewer shows some other agent, until the viewer exits (each copy watches its viewer's pid). One
+    viewer pane holds one such copy: launching replaces any viewer copy already on that pane,
+    whichever persona it was, and never touches a session's own badge (``<pane>/main``) or a team
+    member's.
+    """
+    if not image_path and not name:
+        return []
+    binary = ensure_built()
+    if binary is None or sys.platform.startswith("win"):
+        return []
+    tmux_bin = shutil.which("tmux")
+    pinned = []
+    for pane, tty, viewer_pid in viewer_panes():
+        if pane in exclude:
+            continue
+        key = "".join(ch for ch in pane if ch.isalnum())
+        for pid in _overlays_where(lambda hud_id: hud_id.startswith(f"{key}/viewer-")):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        args = [str(binary), "--avatar", str(avatar), "--avatar-min", str(avatar_min),
+                "--position", position, "--margin", str(margin)]
+        if image_path:
+            args += ["--image", str(image_path)]
+        if name:
+            args += ["--name", str(name)]
+        if tmux_bin:
+            args += ["--tmux-pane", pane, "--tmux-bin", tmux_bin]
+        args += ["--tty", tty, "--watch-pid", str(viewer_pid), "--slot", "0", "--hud-id", _viewer_id(pane, name)]
+        try:
+            with open(os.devnull, "wb") as devnull:
+                subprocess.Popen(args, stdout=devnull, stderr=devnull, start_new_session=True)
+            pinned.append(pane)
+        except OSError:
+            pass
+    return pinned
+
+
+def stop_viewers(name: str | None) -> bool:
+    """Stop the viewer-pane copies launch_viewers() started for persona ``name`` -- only those."""
+    suffix = f"/viewer-{_safe(name or 'persona')}"
+    stopped = False
+    for pid in _overlays_where(lambda hud_id: hud_id.endswith(suffix)):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped = True
+        except OSError:
+            pass
+    return stopped

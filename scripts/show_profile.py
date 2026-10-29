@@ -111,15 +111,32 @@ def _display_one(
     }
 
     if mode == "hud":
+        hud_image = str(image_path) if (show_image and image_path and image_path.is_file()) else None
+        hud_name = str(name) if (show_name and name) else None
         result["hud"] = hud.launch(
-            str(image_path) if (show_image and image_path and image_path.is_file()) else None,
-            str(name) if (show_name and name) else None,
+            hud_image, hud_name,
             avatar=args.avatar,
             avatar_min=args.avatar_min,
             position=args.position,
             margin=args.margin,
             member=member,
         )
+        # Say where it went, not just that something launched: a daemon-hosted session is also
+        # watched from `claude agents` viewer panes, which its own pane says nothing about, and a
+        # bare `hud: true` reads as "you can see it" when the user may be looking at one of those.
+        where = hud.where()
+        result["pane"] = where["pane"] if result["hud"] else None
+        result["daemon_hosted"] = where["daemon_hosted"]
+        if where["daemon_hosted"] and not member:
+            own = (where["pane"],) if result["hud"] and where["pane"] else ()
+            viewers = [pane for pane, _, _ in hud.viewer_panes() if pane not in own]
+            if args.all_viewers:
+                result["viewer_panes"] = hud.launch_viewers(
+                    hud_image, hud_name, avatar=args.avatar, avatar_min=args.avatar_min,
+                    position=args.position, margin=args.margin, exclude=own,
+                )
+            else:
+                result["uncovered_viewer_panes"] = viewers
         return result
 
     if mode == "state":
@@ -215,6 +232,12 @@ def main() -> None:
         help="draw (or, with --clear, remove) agent-team member NAME's badge beside this session's "
         "own, found by name (see discovery.discover_for_session); hud mode only",
     )
+    parser.add_argument(
+        "--all-viewers",
+        action="store_true",
+        help="for a background (daemon-hosted) session, also pin the overlay to every `claude agents` "
+        "viewer pane; it stays there while that viewer shows other agents, until the viewer exits",
+    )
     parser.add_argument("--show-image", dest="show_image", action="store_true", default=None)
     parser.add_argument("--no-image", dest="show_image", action="store_false")
     parser.add_argument("--show-name", dest="show_name", action="store_true", default=None)
@@ -231,6 +254,9 @@ def main() -> None:
 
     if args.clear:
         report = _clear(args)
+        # and this session's persona(s) on `claude agents` viewer panes, if --all-viewers put them there
+        names = [p.fields.get("name") for p in discovery.discover_for_session(Path(args.root).resolve())]
+        report["stopped_viewer_huds"] = any([hud.stop_viewers(n) for n in names if n])
         if machine_readable:
             _print_reports([report])
         return
