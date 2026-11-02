@@ -79,6 +79,90 @@ func parseArgs() -> Options {
     return o
 }
 
+/// Rebuilds where each split pane of an iTerm2 tab sits, from nothing but the panes' sizes.
+///
+/// iTerm2's AppleScript gives each session its `columns` and `rows`, in the depth-first order of
+/// the tab's split tree, but no position -- and the Python API that does report frames needs a
+/// websocket client, protobuf and an auth cookie. The sizes are enough, though: iTerm2 splits a
+/// tab as a guillotine tree, where side-by-side siblings share one height and stacked siblings
+/// share one width, so the depth-first order plus those equalities pins the tree down. Each pane
+/// also carries its own title bar once a tab is split (about one row). Where both orientations fit
+/// at the root (two equal panes, say), the window's shape picks the one that implies a plausible
+/// cell shape. Returns nil when no tree fits, and the caller stacks badges instead of guessing.
+enum SplitLayout {
+    struct Node {
+        var w: CGFloat, h: CGFloat
+        var leaves: [CGRect]  // in cells, top-left origin, relative to this node
+    }
+
+    static let titleRows: CGFloat = 1
+    static let dividerCols: CGFloat = 1
+    /// A typical terminal cell's width over its height (Menlo/SF Mono at common sizes: 0.43-0.5).
+    static let cellAspect: CGFloat = 0.47
+
+    static func close(_ a: CGFloat, _ b: CGFloat) -> Bool {
+        abs(a - b) <= max(2, 0.08 * max(a, b))
+    }
+
+    /// Each pane's rectangle as fractions of the tab's area (top-left origin), in input order.
+    static func solve(_ sizes: [(cols: Int, rows: Int)], window: CGSize) -> [CGRect]? {
+        guard !sizes.isEmpty else { return nil }
+        if sizes.count == 1 { return [CGRect(x: 0, y: 0, width: 1, height: 1)] }
+        let leaves = sizes.map { Node(w: CGFloat($0.cols), h: CGFloat($0.rows) + titleRows,
+                                      leaves: [CGRect(x: 0, y: 0, width: CGFloat($0.cols),
+                                                      height: CGFloat($0.rows) + titleRows)]) }
+        var memo: [String: Node?] = [:]
+
+        // A splitter over leaves i...j: `sideBySide` true means its children sit left to right.
+        func node(_ i: Int, _ j: Int, _ sideBySide: Bool) -> Node? {
+            let key = "\(i),\(j),\(sideBySide)"
+            if let hit = memo[key] { return hit }
+            var found: Node? = nil
+            outer: for m in i..<j {
+                guard let first = child(i, m, sideBySide) else { continue }
+                // The rest is either more siblings of this same splitter, or the last child.
+                for rest in [m + 1 < j ? node(m + 1, j, sideBySide) : nil, child(m + 1, j, sideBySide)] {
+                    guard let rest = rest, let joined = join(first, rest, sideBySide) else { continue }
+                    found = joined
+                    break outer
+                }
+            }
+            memo[key] = found
+            return found
+        }
+
+        func child(_ i: Int, _ j: Int, _ parentSideBySide: Bool) -> Node? {
+            i == j ? leaves[i] : node(i, j, !parentSideBySide)
+        }
+
+        func join(_ a: Node, _ b: Node, _ sideBySide: Bool) -> Node? {
+            if sideBySide {
+                guard close(a.h, b.h) else { return nil }
+                let dx = a.w + dividerCols
+                return Node(w: dx + b.w, h: max(a.h, b.h),
+                            leaves: a.leaves + b.leaves.map { $0.offsetBy(dx: dx, dy: 0) })
+            }
+            guard close(a.w, b.w) else { return nil }
+            return Node(w: max(a.w, b.w), h: a.h + b.h,
+                        leaves: a.leaves + b.leaves.map { $0.offsetBy(dx: 0, dy: a.h) })
+        }
+
+        let n = sizes.count - 1
+        let fits = [node(0, n, true), node(0, n, false)].compactMap { $0 }
+        guard !fits.isEmpty, window.width > 0, window.height > 0 else { return nil }
+        // The cell shape each candidate implies for this window; the plausible one wins.
+        func misfit(_ root: Node) -> CGFloat {
+            let implied = (window.width / root.w) / (window.height / root.h)
+            return abs(log(implied / cellAspect))
+        }
+        let root = fits.min { misfit($0) < misfit($1) }!
+        return root.leaves.map {
+            CGRect(x: $0.minX / root.w, y: $0.minY / root.h,
+                   width: $0.width / root.w, height: $0.height / root.h)
+        }
+    }
+}
+
 /// The badge: a rounded-square picture tile and the persona's name, sitting together on a small
 /// translucent card.
 ///
@@ -356,6 +440,13 @@ final class Controller: NSObject {
     struct WindowLookup {
         var frame: CGRect
         var isFrontmost: Bool
+        /// Which of its tab's split panes this session is (0-based, in iTerm2's own order), and the
+        /// size of every pane in that tab -- what SplitLayout.solve() rebuilds the split from.
+        var paneIndex = 0
+        var paneSizes: [(cols: Int, rows: Int)] = []
+        /// Whether the tab holding this session is the one its window is showing. A window's other
+        /// tabs share its bounds, so without this a background tab's badge draws over this one.
+        var tabVisible = true
     }
 
     /// Under tmux, the tty of the client the user is looking at, re-asked about once a second.
@@ -396,15 +487,27 @@ final class Controller: NSObject {
         guard !tty.isEmpty else { return nil }
         let escaped = tty.replacingOccurrences(of: "\\", with: "\\\\")
                           .replacingOccurrences(of: "\"", with: "\\\"")
+        // Returns "x1,y1,x2,y2,windowIndex,paneIndex;CxR;CxR;...;tabIsCurrent". iTerm2's tabs have
+        // no gettable id or index, so "is this the current tab" is asked as "is the current tab's
+        // current session one of this tab's sessions".
         let source = """
         tell application "iTerm2"
             repeat with i from 1 to count of windows
                 set w to item i of windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        if (tty of s) as string is "\(escaped)" then
+                set ts to tabs of w
+                repeat with j from 1 to count of ts
+                    set ss to sessions of (item j of ts)
+                    repeat with k from 1 to count of ss
+                        if (tty of (item k of ss)) as string is "\(escaped)" then
                             set b to bounds of w
-                            return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string) & "," & (i as string)
+                            set curTTY to (tty of current session of current tab of w) as string
+                            set cur to false
+                            set out to ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string) & "," & (i as string) & "," & (k as string)
+                            repeat with s in ss
+                                if ((tty of s) as string) is curTTY then set cur to true
+                                set out to out & ";" & ((columns of s) as string) & "x" & ((rows of s) as string)
+                            end repeat
+                            return out & ";" & (cur as string)
                         end if
                     end repeat
                 end repeat
@@ -415,14 +518,23 @@ final class Controller: NSObject {
         var errorInfo: NSDictionary?
         let result = script.executeAndReturnError(&errorInfo)
         guard errorInfo == nil, let str = result.stringValue else { return nil }
-        let parts = str.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 5,
+        let sections = str.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+        let parts = sections[0].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 6,
               let x1 = Double(parts[0]), let y1 = Double(parts[1]),
               let x2 = Double(parts[2]), let y2 = Double(parts[3]),
-              let index = Int(parts[4])
+              let index = Int(parts[4]), let pane = Int(parts[5])
         else { return nil }
+        let sizes: [(cols: Int, rows: Int)] = sections.dropFirst().compactMap { item in
+            let cr = item.split(separator: "x")
+            guard cr.count == 2, let c = Int(cr[0]), let r = Int(cr[1]) else { return nil }
+            return (c, r)
+        }
         return WindowLookup(frame: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
-                             isFrontmost: index == 1)
+                            isFrontmost: index == 1,
+                            paneIndex: pane - 1,
+                            paneSizes: sizes,
+                            tabVisible: sections.last != "false")
     }
 
     /// First on-screen window belonging to the terminal app, in Quartz (top-left origin) space.
@@ -545,14 +657,16 @@ final class Controller: NSObject {
         }
 
         let quartz: CGRect
+        var split: WindowLookup? = nil
         if opts.ownerName == "iTerm2", let lookup = windowFrame(forTTY: currentTTY()) {
             // Two iTerm2 windows can occupy nearly identical screen bounds (one maximized behind
             // another) -- "iTerm2 is frontmost" alone can't tell those apart, only this can.
-            guard lookup.isFrontmost else {
+            guard lookup.isFrontmost, lookup.tabVisible else {
                 panel.orderOut(nil)
                 return
             }
             quartz = lookup.frame
+            split = lookup
         } else if let fallback = fallbackWindowFrame() {
             quartz = fallback
         } else {
@@ -564,19 +678,37 @@ final class Controller: NSObject {
         let content = CGRect(x: term.minX, y: term.minY,
                              width: term.width, height: term.height - Self.titleBarHeight)
 
-        // Default target is the whole terminal window; under tmux, narrow it to this pane.
+        // Default target is the whole terminal window. When the iTerm2 tab is split, narrow it to
+        // this session's own split pane -- otherwise every pane's badge (an agent team in iTerm2
+        // split panes, say) lands on the same spot of the window. If the split can't be rebuilt,
+        // fall back to the whole window but stack by pane order, so they still don't overlap.
         var target = content
+        var slot = opts.slot
+        if let split = split, split.paneSizes.count > 1,
+           split.paneSizes.indices.contains(split.paneIndex) {
+            if let rects = SplitLayout.solve(split.paneSizes, window: content.size) {
+                let f = rects[split.paneIndex]
+                target = CGRect(x: content.minX + f.minX * content.width,
+                                y: content.maxY - f.maxY * content.height,
+                                width: f.width * content.width,
+                                height: f.height * content.height)
+            } else {
+                slot += split.paneIndex
+            }
+        }
+        // Under tmux, narrow it further to the tmux pane within that.
         if let pane = tmuxPaneGeometry() {
             guard pane.visible else {
                 panel.orderOut(nil)
                 return
             }
             // Cell fractions are measured from the top; Cocoa's y axis runs the other way.
+            let outer = target
             target = CGRect(
-                x: content.minX + pane.fx0 * content.width,
-                y: content.maxY - pane.fy1 * content.height,
-                width: (pane.fx1 - pane.fx0) * content.width,
-                height: (pane.fy1 - pane.fy0) * content.height)
+                x: outer.minX + pane.fx0 * outer.width,
+                y: outer.maxY - pane.fy1 * outer.height,
+                width: (pane.fx1 - pane.fx0) * outer.width,
+                height: (pane.fy1 - pane.fy0) * outer.height)
         }
 
         // Size to the pane (or window) before placing, so the corner offset uses the new size.
@@ -600,7 +732,7 @@ final class Controller: NSObject {
         }
         // Slots stack away from the edge: down from a top edge (and from the middle), up from a
         // bottom one. Cocoa's y axis runs upward.
-        let step = CGFloat(opts.slot) * (s.height + max(4, m / 4))
+        let step = CGFloat(slot) * (s.height + max(4, m / 4))
         let y: CGFloat
         switch opts.position.count > 1 ? opts.position.first : nil {
         case "t": y = target.maxY - s.height - m - step
@@ -617,6 +749,29 @@ final class Controller: NSObject {
         RunLoop.main.add(timer, forMode: .common)
         tick()
     }
+}
+
+// `--solve-layout "106x41;106x5;..." --window 1512x851` prints SplitLayout.solve()'s answer, one
+// "x0,y0,x1,y1" line per pane (or "nil"), and exits without drawing anything -- for the tests.
+if let i = CommandLine.arguments.firstIndex(of: "--solve-layout"), i + 1 < CommandLine.arguments.count {
+    let sizes: [(cols: Int, rows: Int)] = CommandLine.arguments[i + 1].split(separator: ";").compactMap {
+        let cr = $0.split(separator: "x")
+        guard cr.count == 2, let c = Int(cr[0]), let r = Int(cr[1]) else { return nil }
+        return (c, r)
+    }
+    var window = CGSize(width: 1500, height: 850)
+    if let w = CommandLine.arguments.firstIndex(of: "--window"), w + 1 < CommandLine.arguments.count {
+        let wh = CommandLine.arguments[w + 1].split(separator: "x").compactMap { Double($0) }
+        if wh.count == 2 { window = CGSize(width: wh[0], height: wh[1]) }
+    }
+    if let rects = SplitLayout.solve(sizes, window: window) {
+        for r in rects {
+            print(String(format: "%.3f,%.3f,%.3f,%.3f", r.minX, r.minY, r.maxX, r.maxY))
+        }
+    } else {
+        print("nil")
+    }
+    exit(0)
 }
 
 let app = NSApplication.shared

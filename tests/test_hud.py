@@ -915,3 +915,70 @@ def test_pane_lock_serialises_two_holders(tmp_path):
         t.join()
     # never interleaved: whoever got in first got out before the other got in
     assert order[0][0] == order[1][0] and order[2][0] == order[3][0]
+
+
+# --- iTerm2 split panes without tmux ----------------------------------------------------------
+# Every split pane's badge used to be placed against the whole window, so an agent team in iTerm2
+# split panes piled every member's badge onto one spot. The overlay now rebuilds the tab's split
+# tree from the panes' sizes (SplitLayout.solve) and pins each badge over its own pane.
+
+@pytest.fixture(scope="module")
+def solver(tmp_path_factory):
+    import shutil
+
+    if sys.platform != "darwin" or not shutil.which("swiftc"):
+        pytest.skip("needs swiftc on macOS")
+    binary = tmp_path_factory.mktemp("hud") / "persona-hud"
+    subprocess.run(["swiftc", "-O", "-o", str(binary), str(HUD_DIR / "PersonaHUD.swift")],
+                   check=True, capture_output=True, timeout=300)
+
+    def solve(sizes: str, window: str = "1500x850"):
+        out = subprocess.run([str(binary), "--solve-layout", sizes, "--window", window],
+                             capture_output=True, text=True, timeout=10).stdout.split()
+        if out == ["nil"]:
+            return None
+        return [tuple(float(v) for v in line.split(",")) for line in out]
+
+    return solve
+
+
+def _near(rect, expected, tol=0.03):
+    return all(abs(a - b) <= tol for a, b in zip(rect, expected))
+
+
+def test_split_layout_lead_beside_a_stack_of_teammates(solver):
+    # The real layout from the bug report: lead on the left, seven teammates stacked on the right.
+    rects = solver("106x41;106x4;106x5;106x5;106x5;106x5;106x5;106x5", "1512x851")
+    assert _near(rects[0], (0, 0, 0.5, 1))
+    assert all(_near((r[0], r[2]), (0.5, 1)) for r in rects[1:])
+    tops = [r[1] for r in rects[1:]]
+    assert tops == sorted(tops) and len(set(tops)) == 7  # each teammate its own row, none shared
+
+
+def test_split_layout_two_equal_panes_follow_the_window_shape(solver):
+    side_by_side = solver("80x40;80x40", "1300x700")
+    assert _near(side_by_side[0], (0, 0, 0.5, 1)) and _near(side_by_side[1], (0.5, 0, 1, 1))
+    stacked = solver("160x19;160x20", "1300x700")
+    assert _near(stacked[0], (0, 0, 1, 0.5)) and _near(stacked[1], (0, 0.5, 1, 1))
+
+
+def test_split_layout_nested_splits(solver):
+    rects = solver("100x40;100x20;49x19;50x19", "1500x700")
+    assert _near(rects[0], (0, 0, 0.5, 1))
+    assert _near(rects[1], (0.5, 0, 1, 0.5))
+    assert _near(rects[2], (0.5, 0.5, 0.75, 1))
+    assert _near(rects[3], (0.75, 0.5, 1, 1))
+
+
+def test_split_layout_gives_up_rather_than_guess(solver):
+    assert solver("100x40;30x7", "1500x700") is None
+    assert solver("120x40") == [(0, 0, 1, 1)]
+
+
+def test_swift_overlay_pins_to_its_split_pane_and_its_tab():
+    swift = _swift_source()
+    assert "SplitLayout.solve(split.paneSizes" in swift
+    # unsolvable split: still never on top of each other
+    assert "slot += split.paneIndex" in swift
+    # a background tab's badge must not draw over the tab on screen
+    assert "guard lookup.isFrontmost, lookup.tabVisible" in swift
